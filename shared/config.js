@@ -22,6 +22,16 @@ export const REQUIRED_KEYS = Object.freeze([
   'QDRANT_CLOUD_URL',
 ]);
 
+/**
+ * Keys with sensible defaults (added in Phase 1). They are NOT required:
+ * when absent from env/file/optional, these values are filled in so callers
+ * can rely on them always being present in the returned config.
+ */
+export const OPTIONAL_DEFAULTS = Object.freeze({
+  OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+  QDRANT_EDGE_COLLECTION: 'aeroedge_edge_docs',
+});
+
 /** Error thrown for any configuration problem (missing file, missing or empty variable). */
 export class ConfigError extends Error {
   constructor(message) {
@@ -81,13 +91,22 @@ export function loadConfig({
     if (value !== undefined && value !== null) envValues[key] = value;
   }
   const merged = { ...fileValues, ...envValues, ...optional };
+  // Fill defaults AFTER validation so a var that is provided but empty is
+  // still an error, while a var that is simply absent gets its default.
+  const effective = { ...OPTIONAL_DEFAULTS, ...merged };
 
+  // Validate required keys (must be present) AND defaulted keys (must not
+  // be present-but-empty); absent defaulted keys get their default below.
+  const checkKeys = [...REQUIRED_KEYS, ...Object.keys(OPTIONAL_DEFAULTS)];
   const missing = [];
   const empty = [];
-  for (const key of REQUIRED_KEYS) {
+  for (const key of checkKeys) {
     const value = merged[key];
-    if (value === undefined || value === null) missing.push(key);
-    else if (String(value).trim() === '') empty.push(key);
+    if (value === undefined || value === null) {
+      if (REQUIRED_KEYS.includes(key)) missing.push(key);
+    } else if (String(value).trim() === '') {
+      empty.push(key);
+    }
   }
 
   if (requireAll && missing.length > 0) {
@@ -106,6 +125,9 @@ export function loadConfig({
 
   /** @type {Record<string, string>} */
   const config = {};
+  for (const key of Object.keys(OPTIONAL_DEFAULTS)) {
+    config[key] = String(effective[key]).trim();
+  }
   for (const key of REQUIRED_KEYS) {
     if (merged[key] !== undefined && merged[key] !== null) {
       config[key] = String(merged[key]).trim();

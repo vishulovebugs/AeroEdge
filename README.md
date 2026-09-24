@@ -6,8 +6,10 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 0 — Project Foundation.** Repo skeleton and shared data contracts only.
-> No product logic yet: no retrieval, no Ollama calls, no Qdrant calls, no UI.
+> **Status: Phase 1 — Basic Local RAG.** Phase 0 delivered the repo skeleton and
+> shared data contracts. Phase 1 adds the core offline loop: ingest a document →
+> chunk → embed locally (Ollama) → store in Qdrant Edge → query → grounded answer.
+> No JEV yet, no field-observation memory, no UI.
 
 ## Requirements
 
@@ -35,10 +37,43 @@ Copy `.env.example` to `.env` and fill in the values. Required variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `OLLAMA_MODEL` | Local LLM used for Edge Pass JEV evaluation and generation (Ollama model name). |
-| `EMBEDDING_MODEL` | Local embedding model served by Ollama (Ollama model name). |
+| `OLLAMA_MODEL` | Local LLM used for grounded generation (and later, Edge Pass JEV). |
+| `EMBEDDING_MODEL` | Local embedding model served by Ollama — ingestion and query embedding MUST use the same one. |
 | `QDRANT_EDGE_URL` | HTTP endpoint of the Edge Qdrant instance. |
 | `QDRANT_CLOUD_URL` | HTTP endpoint of the Cloud Qdrant instance. |
+| `OLLAMA_BASE_URL` | Optional; defaults to `http://127.0.0.1:11434`. |
+| `QDRANT_EDGE_COLLECTION` | Optional; defaults to `aeroedge_edge_docs`. |
+
+## Running the local pipeline
+
+The Phase 1 pipeline is fully offline: it talks only to your local Ollama and
+local Qdrant (verify with `test/unit/offline-only.test.js`, which fails if any
+external SDK or non-loopback endpoint appears on this path).
+
+```bash
+ollama serve
+ollama pull nomic-embed-text
+ollama pull llama3.1:8b          # or set OLLAMA_MODEL
+docker run -p 6333:6333 qdrant/qdrant
+
+cp .env.example .env
+node -e "
+  import('./shared/config.js').then(async ({ loadConfig }) => {
+    const { createRagPipeline } = await import('./edge/rag.js');
+    const pipeline = createRagPipeline({ config: loadConfig({ envFile: '.env' }) });
+    const doc = await pipeline.ingestDocument({
+      documentId: 'amm-29-snippet',
+      text: 'Hydraulic system B operates at 2800-3200 PSI. Overpressure opens the thermal relief valve.',
+      assetId: 'aircraft-737-MSN4453',
+      component: 'hydraulics',
+      source: 'AMM rev 42',
+    });
+    console.log('ingested chunks:', doc.chunkCount);
+    const out = await pipeline.answerQuestion('What is the normal pressure range of hydraulic system B?');
+    console.log('answer:', out.answer);
+  });
+"
+```
 
 `shared/config.js` throws a specific, actionable error naming the first missing
 required variable. Optional variables must be passed explicitly, e.g.

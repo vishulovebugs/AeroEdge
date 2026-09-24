@@ -30,12 +30,38 @@ test('REQUIRED_KEYS matches the .env.example contract', () => {
   );
 });
 
-test('loads all required vars from a complete env', () => {
+test('loads all required vars from a complete env, with defaults filled', () => {
   const config = loadConfig({ env: FULL_ENV });
   assert.equal(config.OLLAMA_MODEL, 'llama3.1:8b');
   assert.equal(config.EMBEDDING_MODEL, 'nomic-embed-text');
   assert.equal(config.QDRANT_EDGE_URL, 'http://localhost:6333');
   assert.equal(config.QDRANT_CLOUD_URL, 'http://localhost:6334');
+  assert.equal(config.OLLAMA_BASE_URL, 'http://127.0.0.1:11434');
+  assert.equal(config.QDRANT_EDGE_COLLECTION, 'aeroedge_edge_docs');
+});
+
+test('optional keys can be overridden via env, file, or optional', () => {
+  const viaEnv = loadConfig({
+    env: { ...FULL_ENV, OLLAMA_BASE_URL: 'http://127.0.0.1:11500' },
+  });
+  assert.equal(viaEnv.OLLAMA_BASE_URL, 'http://127.0.0.1:11500');
+
+  const viaOptional = loadConfig({
+    env: FULL_ENV,
+    optional: { QDRANT_EDGE_COLLECTION: 'custom_edge_docs' },
+  });
+  assert.equal(viaOptional.QDRANT_EDGE_COLLECTION, 'custom_edge_docs');
+});
+
+test('an empty value for a defaulted key still fails loudly', () => {
+  assert.throws(
+    () => loadConfig({ env: { ...FULL_ENV, OLLAMA_BASE_URL: ' ' } }),
+    (err) => {
+      assert.match(err.message, /OLLAMA_BASE_URL/);
+      assert.match(err.message, /empty/i);
+      return true;
+    }
+  );
 });
 
 test('loads values from a .env file when env does not provide them', () => {
@@ -116,9 +142,12 @@ test('parseEnvFile throws a clear error for a nonexistent file', () => {
   });
 });
 
-test('returned config is frozen', () => {
+test('returned config is frozen and carries no empty values', () => {
   const config = loadConfig({ env: FULL_ENV });
   assert.ok(Object.isFrozen(config));
+  for (const value of Object.values(config)) {
+    assert.ok(value !== undefined && value !== null && value !== '');
+  }
 });
 
 test('trims surrounding whitespace from values', () => {
