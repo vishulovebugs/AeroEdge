@@ -1,0 +1,16 @@
+{
+  "name": "aeroedge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Edge-native AI memory, reasoning, and knowledge-validation platform for maintenance operations in disconnected environments.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test:unit": "node --test \"test/unit/**/*.test.js\"",
+    "test:integration": "node --test \"test/integration/**/*.test.js\"",
+    "test:interconnect": "node --test \"test/interconnect/**/*.test.js\"",
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}
