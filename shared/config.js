@@ -30,6 +30,10 @@ export const REQUIRED_KEYS = Object.freeze([
 export const OPTIONAL_DEFAULTS = Object.freeze({
   OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
   QDRANT_EDGE_COLLECTION: 'aeroedge_edge_docs',
+  // Phase 4: technician memories live in their OWN Edge collection —
+  // architecturally separate from authoritative document chunks so field
+  // knowledge can never silently blend into reference truth.
+  QDRANT_EDGE_MEMORY_COLLECTION: 'aeroedge_edge_memories',
 });
 
 /** Error thrown for any configuration problem (missing file, missing or empty variable). */

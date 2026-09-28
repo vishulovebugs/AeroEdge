@@ -95,8 +95,11 @@ function evalFilter(filter, payload) {
   return true;
 }
 
-/** In-memory Qdrant stand-in with real cosine ranking and filter support. */
-export function makeFakeQdrant() {
+/**
+ * In-memory Qdrant stand-in with real cosine ranking and filter support.
+ * @param {{ collection?: string }} [opts] Collection name the fake reports (mirrors the real client).
+ */
+export function makeFakeQdrant({ collection = 'aeroedge_edge_docs' } = {}) {
   /** @type {Map<string, { vector: number[], payload: Record<string, unknown> }>} */
   const points = new Map();
   /** @type {string[]} */
@@ -115,6 +118,7 @@ export function makeFakeQdrant() {
   }
 
   return {
+    collection,
     calls,
     size: () => points.size,
     has: (id) => points.has(id),
@@ -150,7 +154,10 @@ export function makeFakeQdrant() {
         .slice(0, limit);
     },
     /**
-     * Fetch points by payload filter without vectors (keyword/metadata leg).
+     * Fetch points by payload filter without vectors (keyword/metadata leg;
+     * Phase 4 memory store). Returns REAL point ids (Map keys), matching the
+     * real Qdrant scroll response — document-chunk payloads carry the same
+     * id as their point, so this is observably identical for chunk tests.
      * @param {{ must?: unknown[], should?: unknown[], must_not?: unknown[] }} filter
      * @param {{ limit?: number }} [opts]
      */
@@ -158,9 +165,9 @@ export function makeFakeQdrant() {
       calls.push(`scroll:${limit}`);
       /** @type {{ id: string, score: number, payload: Record<string, unknown> }[]} */
       const out = [];
-      for (const p of points.values()) {
+      for (const [pointId, p] of [...points]) {
         if (!evalFilter(filter, p.payload)) continue;
-        out.push({ id: String(p.payload.id), score: 1, payload: p.payload });
+        out.push({ id: pointId, score: 1, payload: p.payload });
         if (out.length >= limit) break;
       }
       return out;
@@ -170,6 +177,11 @@ export function makeFakeQdrant() {
       for (const [id, p] of [...points]) {
         if (p.payload.document_id === documentId) points.delete(id);
       }
+    },
+    /** Delete by explicit point ids (Phase 4 memory expiry). */
+    async deleteByIds(ids) {
+      calls.push(`deleteByIds:${ids.length}`);
+      for (const id of ids) points.delete(id);
     },
   };
 }

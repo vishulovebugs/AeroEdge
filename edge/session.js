@@ -24,6 +24,8 @@ import { randomUUID } from 'node:crypto';
 
 /** Recent queries kept in full in the session state. */
 export const MAX_RECENT_QUERIES = 10;
+/** Technician observations mirrored into the session (written by Phase 4). */
+export const MAX_SESSION_OBSERVATIONS = 20;
 /** Recent retrieved chunks kept as session evidence context. */
 export const MAX_RECENT_EVIDENCE = 3;
 /** Hard character budget for the injected context summary. */
@@ -51,6 +53,10 @@ export const HISTORY_THRESHOLD_CHARS = 600;
  * @property {{ chunkId: string, documentId: string, source: string, content: string }[]} recentEvidence
  *           Newest LAST, bounded by MAX_RECENT_EVIDENCE (bounded content copies).
  * @property {string[]} actionsTaken Actions the technician says they already did.
+ * @property {{ memoryId: string, content: string, notedAt: string }[]} observations
+ *           Technician observations recorded through the Phase 4 memory
+ *           orchestrator during this session ("technician observations so
+ *           far"). Newest LAST, bounded by MAX_SESSION_OBSERVATIONS.
  * @property {string} startedAt
  * @property {string} lastActiveAt
  */
@@ -81,6 +87,7 @@ export function createSession(seed = {}) {
     recentQueries: [],
     recentEvidence: [],
     actionsTaken: [],
+    observations: [],
     startedAt: now,
     lastActiveAt: now,
   };
@@ -311,6 +318,7 @@ export function buildSessionSummary(state, { maxChars = SUMMARY_MAX_CHARS } = {}
     state.component !== null ||
     state.issue !== null ||
     state.actionsTaken.length > 0 ||
+    (Array.isArray(state.observations) && state.observations.length > 0) ||
     state.recentQueries.length > 0 ||
     state.recentEvidence.length > 0;
   if (!hasContext) return '';
@@ -322,6 +330,12 @@ export function buildSessionSummary(state, { maxChars = SUMMARY_MAX_CHARS } = {}
   if (state.issue !== null) lines.push(`- Current issue: ${state.issue}`);
   if (state.actionsTaken.length > 0) {
     lines.push(`- Actions already taken: ${state.actionsTaken.slice(-3).join('; ')}`);
+  }
+  if (Array.isArray(state.observations) && state.observations.length > 0) {
+    lines.push('- Technician observations so far:');
+    for (const obs of state.observations.slice(-3)) {
+      lines.push(`  * ${obs.content}`);
+    }
   }
 
   const historyChars = state.recentQueries.reduce((sum, t) => sum + t.query.length, 0);

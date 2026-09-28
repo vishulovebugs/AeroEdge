@@ -27,11 +27,14 @@ const ENTRYPOINTS = [
   'edge/rag.js',
   'edge/retrieval.js',
   'edge/session.js',
+  'edge/memoryStore.js',
+  'edge/orchestrator.js',
   'edge/chunker.js',
   'edge/ollama.js',
   'edge/qdrant.js',
   'shared/config.js',
   'shared/schemas.js',
+  'shared/lifecycle.js',
 ];
 
 const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s+(?:[\s\S]*?from\s*)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;

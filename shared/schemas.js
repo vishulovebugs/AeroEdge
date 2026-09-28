@@ -54,6 +54,7 @@
  * @property {SyncStatus} sync_status
  * @property {LifecycleStatus} lifecycle_status
  * @property {JEVStatus} jev_status
+ * @property {string} [revision_of] memory_id this record revises (UPDATE lineage; absent = original).
  */
 
 /**
@@ -186,6 +187,9 @@ const MEMORY_FIELDS = new Set([
   'sync_status',
   'lifecycle_status',
   'jev_status',
+  // Phase 4: versioned-revision lineage (UPDATE = new version, never a
+  // silent overwrite). Absent/empty = original record.
+  'revision_of',
 ]);
 
 const JEV_VERDICT_FIELDS = new Set([
@@ -416,6 +420,7 @@ export function validateMemory(obj) {
   requireEnum(record, 'sync_status', SYNC_STATUSES, 'Memory', errors);
   requireEnum(record, 'lifecycle_status', LIFECYCLE_STATUSES, 'Memory', errors);
   requireEnum(record, 'jev_status', JEV_STATUSES, 'Memory', errors);
+  requireNonEmptyStringIfPresent(record, 'revision_of', 'Memory', errors);
   return { valid: errors.length === 0, errors };
 }
 

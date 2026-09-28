@@ -174,18 +174,20 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
 
     /**
      * Filtered scroll: fetch points matching a payload filter WITHOUT any
-     * vector or scoring (keyword/metadata-only leg of hybrid retrieval).
+     * vector or scoring (keyword/metadata-only leg of hybrid retrieval;
+     * also used by the Phase 4 memory store, which stores NO vectors).
      * @param {QdrantFilter} filter
      * @param {Object} [opts]
      * @param {number} [opts.limit]
+     * @param {boolean} [opts.withVector] Also return stored vectors (rarely needed).
      * @returns {Promise<Array<{ id: string, score: number, payload: Record<string, unknown> }>>}
      */
-    async scrollWithFilter(filter, { limit = 50 } = {}) {
+    async scrollWithFilter(filter, { limit = 50, withVector = false } = {}) {
       const data = await request('POST', `/collections/${collection}/points/scroll`, {
         filter,
         limit,
         with_payload: true,
-        with_vector: false,
+        with_vector: withVector,
       });
       const result = /** @type {{ points?: unknown }} */ (data).result;
       if (!Array.isArray(result)) {
@@ -212,6 +214,19 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
       await request('POST', `/collections/${collection}/points/delete`, {
         filter: { must: [{ key: 'document_id', match: { value: documentId } }] },
       });
+    },
+
+    /**
+     * Delete points by explicit ids (Phase 4: memory expiry uses exact ids,
+     * never a content filter — expiry is a deliberate lifecycle act).
+     * @param {string[]} ids
+     * @returns {Promise<void>}
+     */
+    async deleteByIds(ids) {
+      if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === 'string' && id.trim() !== '')) {
+        throw new QdrantError('deleteByIds requires a non-empty array of point id strings');
+      }
+      await request('POST', `/collections/${collection}/points/delete`, { points: ids });
     },
   };
 }
