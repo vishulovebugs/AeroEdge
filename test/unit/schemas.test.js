@@ -164,6 +164,52 @@ test('validateDocumentChunk rejects a bad embedding', () => {
   }
 });
 
+test('validateDocumentChunk accepts Phase 2 retrieval metadata when well-formed', () => {
+  const result = validateDocumentChunk({
+    ...validDocumentChunk(),
+    equipment_model: 'SkyRay MK-IV',
+    doc_type: 'amm',
+    applicability: ['fleet-a', 'fleet-b'],
+    keywords: ['ZX-99Q', 'F-77'],
+  });
+  assert.deepEqual(result, { valid: true, errors: [] });
+});
+
+test('validateDocumentChunk accepts empty applicability/keywords (no restriction)', () => {
+  const result = validateDocumentChunk({
+    ...validDocumentChunk(),
+    applicability: [],
+    keywords: [],
+  });
+  assert.deepEqual(result, { valid: true, errors: [] });
+});
+
+test('validateDocumentChunk rejects malformed Phase 2 retrieval metadata', () => {
+  const bad = [
+    { equipment_model: '   ' },
+    { equipment_model: 7 },
+    { doc_type: '' },
+    { applicability: 'fleet-a' },
+    { applicability: ['fleet-a', 42] },
+    { keywords: [''] },
+    { keywords: ['ok', '   '] },
+  ];
+  for (const patch of bad) {
+    const result = validateDocumentChunk({ ...validDocumentChunk(), ...patch });
+    assert.equal(result.valid, false, `should reject ${JSON.stringify(patch)}`);
+  }
+});
+
+test('validateDocumentChunk still rejects unknown properties alongside Phase 2 fields', () => {
+  const result = validateDocumentChunk({
+    ...validDocumentChunk(),
+    doc_type: 'amm',
+    rogue_field: 'x',
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes('rogue_field')));
+});
+
 // ---------------------------------------------------------------------------
 // SyncEvent
 // ---------------------------------------------------------------------------

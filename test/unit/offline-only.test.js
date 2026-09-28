@@ -25,6 +25,8 @@ import { dirname, join } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ENTRYPOINTS = [
   'edge/rag.js',
+  'edge/retrieval.js',
+  'edge/session.js',
   'edge/chunker.js',
   'edge/ollama.js',
   'edge/qdrant.js',
@@ -78,7 +80,7 @@ test('offline path imports only node builtins and project-internal modules', () 
   }
   // The entrypoint graph must reach the whole edge pipeline.
   const { visited } = collectImportGraph('edge/rag.js');
-  for (const expected of ['edge/rag.js', 'edge/chunker.js', 'edge/ollama.js', 'edge/qdrant.js', 'shared/schemas.js']) {
+  for (const expected of ['edge/rag.js', 'edge/retrieval.js', 'edge/session.js', 'edge/chunker.js', 'edge/ollama.js', 'edge/qdrant.js', 'shared/schemas.js']) {
     assert.ok(visited.includes(expected), `edge/rag.js should reach ${expected}`);
   }
 });

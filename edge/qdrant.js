@@ -3,11 +3,13 @@
 /**
  * Minimal Qdrant REST client for the Edge instance.
  *
- * Only the operations the RAG pipeline needs: ensure a collection exists,
- * upsert points, vector search, and delete-by-document-filter. The Edge
- * instance is architecturally separate from the Cloud instance — this module
- * only ever talks to the URL in QDRANT_EDGE_URL; nothing here knows the
- * cloud endpoint exists.
+ * Only the operations the retrieval pipeline needs: ensure a collection
+ * exists (with optional payload indexes), upsert points, vector search
+ * (plain and filter-constrained), filtered scroll (no vectors — the
+ * keyword/metadata leg of hybrid retrieval), and delete-by-document-filter.
+ * The Edge instance is architecturally separate from the Cloud instance —
+ * this module only ever talks to the URL in QDRANT_EDGE_URL; nothing here
+ * knows the cloud endpoint exists.
  *
  * `fetch` is injectable for unit tests; see edge/ollama.js for the same
  * offline-path auditability argument.
@@ -34,6 +36,29 @@ export class QdrantError extends Error {
     this.status = status;
   }
 }
+
+/**
+ * A single Qdrant payload-index request.
+ * @typedef {Object} PayloadIndexSpec
+ * @property {string} fieldName Payload key to index.
+ * @property {string} [fieldType] Qdrant payload schema type (e.g. "keyword", "integer", "datetime").
+ */
+
+/**
+ * A Qdrant condition clause (subset used by AeroEdge). Nested filters are
+ * not needed at this phase.
+ * @typedef {Object} MatchClause
+ * @property {string} key Payload key to match.
+ * @property {{ value?: unknown, any?: unknown[], text?: string }} [match]
+ */
+
+/**
+ * A Qdrant filter object (subset used by AeroEdge).
+ * @typedef {Object} QdrantFilter
+ * @property {MatchClause[]} [must]
+ * @property {MatchClause[]} [should]
+ * @property {MatchClause[]} [must_not]
+ */
 
 /**
  * @param {QdrantClientOptions} options
@@ -77,14 +102,13 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
 
   return {
     /** @type {string} */
-    collection,
-
-    /**
+    collection,    /**
      * Create the collection with the given vector size if it does not exist.
      * @param {number} vectorSize
+     * @param {PayloadIndexSpec[]} [payloadIndexes] Payload fields to index (Phase 2: keyword match filters).
      * @returns {Promise<void>}
      */
-    async ensureCollection(vectorSize) {
+    async ensureCollection(vectorSize, payloadIndexes = []) {
       if (!Number.isInteger(vectorSize) || vectorSize <= 0) {
         throw new QdrantError(`ensureCollection requires a positive integer vector size, got ${vectorSize}`);
       }
@@ -94,6 +118,11 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
       await request('PUT', `/collections/${collection}`, {
         vectors: { size: vectorSize, distance: 'Cosine' },
       });
+      for (const spec of payloadIndexes) {
+        await request('PUT', `/collections/${collection}/index/${spec.fieldName}`, {
+          field_schema: spec.fieldType ?? 'keyword',
+        });
+      }
     },
 
     /**
@@ -107,7 +136,7 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
     },
 
     /**
-     * Vector similarity search.
+     * Vector similarity search (unconstrained).
      * @param {number[]} queryVector
      * @param {Object} [opts]
      * @param {number} [opts.limit]
@@ -119,16 +148,55 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
         limit,
         with_payload: true,
       });
-      const result = /** @type {{ result?: unknown }} */ (data).result;
-      if (!Array.isArray(result)) {
-        throw new QdrantError(`Qdrant search on "${collection}" returned no result array`);
+      return parseHits(data, collection);
+    },
+
+    /**
+     * Vector similarity search, optionally constrained by a payload filter.
+     * @param {number[]} queryVector
+     * @param {Object} [opts]
+     * @param {number} [opts.limit]
+     * @param {QdrantFilter} [opts.filter]
+     * @returns {Promise<Array<{ id: string, score: number, payload: Record<string, unknown> }>>}
+     */
+    async searchWhere(queryVector, { limit = 4, filter } = {}) {
+      if (!filter || Object.keys(filter).length === 0) {
+        return this.search(queryVector, { limit });
       }
-      return result.map((hit) => {
-        const h = /** @type {{ id?: unknown, score?: unknown, payload?: unknown }} */ (hit);
-        if (typeof h.id !== 'string' || typeof h.score !== 'number' || typeof h.payload !== 'object' || h.payload === null) {
-          throw new QdrantError(`Qdrant search on "${collection}" returned a malformed hit`);
+      const data = await request('POST', `/collections/${collection}/points/search`, {
+        vector: queryVector,
+        limit,
+        with_payload: true,
+        filter,
+      });
+      return parseHits(data, collection);
+    },
+
+    /**
+     * Filtered scroll: fetch points matching a payload filter WITHOUT any
+     * vector or scoring (keyword/metadata-only leg of hybrid retrieval).
+     * @param {QdrantFilter} filter
+     * @param {Object} [opts]
+     * @param {number} [opts.limit]
+     * @returns {Promise<Array<{ id: string, score: number, payload: Record<string, unknown> }>>}
+     */
+    async scrollWithFilter(filter, { limit = 50 } = {}) {
+      const data = await request('POST', `/collections/${collection}/points/scroll`, {
+        filter,
+        limit,
+        with_payload: true,
+        with_vector: false,
+      });
+      const result = /** @type {{ points?: unknown }} */ (data).result;
+      if (!Array.isArray(result)) {
+        throw new QdrantError(`Qdrant scroll on "${collection}" returned no points array`);
+      }
+      return result.map((point) => {
+        const p = point ?? {};
+        if (typeof p.id !== 'string' || typeof p.payload !== 'object' || p.payload === null) {
+          throw new QdrantError(`Qdrant scroll on "${collection}" returned a malformed point`);
         }
-        return { id: h.id, score: h.score, payload: /** @type {Record<string, unknown>} */ (h.payload) };
+        return { id: p.id, score: 1, payload: /** @type {Record<string, unknown>} */ (p.payload) };
       });
     },
 
@@ -146,4 +214,24 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
       });
     },
   };
+}
+
+/**
+ * Parse and validate a Qdrant search response into typed hits.
+ * @param {any} data Raw JSON body from /points/search.
+ * @param {string} collection Collection name (for error messages).
+ * @returns {Array<{ id: string, score: number, payload: Record<string, unknown> }>}
+ */
+function parseHits(data, collection) {
+  const result = data?.result;
+  if (!Array.isArray(result)) {
+    throw new QdrantError(`Qdrant search on "${collection}" returned no result array`);
+  }
+  return result.map((hit) => {
+    const h = hit ?? {};
+    if (typeof h.id !== 'string' || typeof h.score !== 'number' || typeof h.payload !== 'object' || h.payload === null) {
+      throw new QdrantError(`Qdrant search on "${collection}" returned a malformed hit`);
+    }
+    return { id: h.id, score: h.score, payload: h.payload };
+  });
 }

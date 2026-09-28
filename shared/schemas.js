@@ -73,6 +73,9 @@
  */
 
 /**
+ * A stored document chunk. The Phase 2 fields are optional retrieval
+ * metadata used by hybrid search; legacy Phase 1 chunks without them
+ * remain valid (absent = no metadata filtering / no keyword index boost).
  * @typedef {Object} DocumentChunk
  * @property {string} id
  * @property {string} document_id
@@ -82,6 +85,10 @@
  * @property {string} asset_id
  * @property {string} component
  * @property {string} source
+ * @property {string} [equipment_model] Equipment model the doc applies to (e.g. "SkyRay MK-IV").
+ * @property {string} [doc_type] Document type (e.g. "amm", "bulletin", "procedure").
+ * @property {string[]} [applicability] Asset/config applicability list (empty = unrestricted).
+ * @property {string[]} [keywords] Curated exact-match tokens (part numbers, error codes, IDs).
  * @property {string} created_at
  * @property {string} updated_at
  */
@@ -203,6 +210,12 @@ const DOCUMENT_CHUNK_FIELDS = new Set([
   'asset_id',
   'component',
   'source',
+  // Phase 2: optional retrieval metadata (hybrid search). Absent = fine;
+  // present = must be well-formed (see validateDocumentChunk).
+  'equipment_model',
+  'doc_type',
+  'applicability',
+  'keywords',
   'created_at',
   'updated_at',
 ]);
@@ -327,6 +340,40 @@ function requireStringArray(obj, field, type, errors) {
 }
 
 /**
+ * Optional string: absent is fine, but present must be a non-blank string.
+ * @param {Record<string, unknown>} obj
+ * @param {string} field
+ * @param {string} type
+ * @param {string[]} errors
+ */
+function requireNonEmptyStringIfPresent(obj, field, type, errors) {
+  if (obj[field] === undefined) return;
+  requireNonEmptyString(obj, field, type, errors);
+}
+
+/**
+ * Optional string array: absent or empty is fine, but present elements must
+ * be non-empty strings (an empty array means "no restriction").
+ * @param {Record<string, unknown>} obj
+ * @param {string} field
+ * @param {string} type
+ * @param {string[]} errors
+ */
+function requireStringArrayIfPresent(obj, field, type, errors) {
+  const value = obj[field];
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    errors.push(errorFor(type, `"${field}" must be an array of strings when present`));
+    return;
+  }
+  if (!value.every((item) => typeof item === 'string' && item.trim() !== '')) {
+    errors.push(
+      errorFor(type, `"${field}" must contain only non-empty strings when present`)
+    );
+  }
+}
+
+/**
  * Reject unknown properties so no module can smuggle in its own shape.
  * @param {unknown} obj
  * @param {ReadonlySet<string>} fields
@@ -426,6 +473,11 @@ export function validateDocumentChunk(obj) {
   requireNonEmptyString(record, 'asset_id', 'DocumentChunk', errors);
   requireNonEmptyString(record, 'component', 'DocumentChunk', errors);
   requireNonEmptyString(record, 'source', 'DocumentChunk', errors);
+  // Phase 2 optional retrieval metadata — validated only when present.
+  requireNonEmptyStringIfPresent(record, 'equipment_model', 'DocumentChunk', errors);
+  requireNonEmptyStringIfPresent(record, 'doc_type', 'DocumentChunk', errors);
+  requireStringArrayIfPresent(record, 'applicability', 'DocumentChunk', errors);
+  requireStringArrayIfPresent(record, 'keywords', 'DocumentChunk', errors);
   requireTimestamp(record, 'created_at', 'DocumentChunk', errors);
   requireTimestamp(record, 'updated_at', 'DocumentChunk', errors);
   return { valid: errors.length === 0, errors };

@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { createRagPipeline } from '../../edge/rag.js';
 import { createOllamaClient, OllamaError } from '../../edge/ollama.js';
 import { createQdrantClient, QdrantError } from '../../edge/qdrant.js';
+import { denyAllFetch, makeFakeOllama, makeFakeQdrant } from '../helpers/fakes.js';
 
 const DOC = [
   'Hydraulic system B operates at a normal pressure range of 2800-3200 PSI.',
@@ -27,90 +28,6 @@ const DOC = [
 // Repeated so the document exceeds the 1600-char default chunk size and
 // produces several chunks through the real pipeline.
 const LONG_DOC = Array.from({ length: 8 }, () => DOC).join('\n\n');
-
-/** Deny-all fetch: any network attempt fails the test immediately. */
-const denyAllFetch = /** @type {typeof fetch} */ (
-  () => Promise.reject(new Error('network access denied by test'))
-);
-
-/** Deterministic fake embedder: normalized word-bucket vectors. */
-function makeFakeOllama() {
-  /** @type {string[][]} */
-  const embedCalls = [];
-  /** @type {{system: string, prompt: string}[]} */
-  const generateCalls = [];
-
-  /** @param {string} text */
-  function embedOne(text) {
-    const vec = new Array(32).fill(0);
-    for (const word of text.toLowerCase().match(/[a-z0-9·.-]+/g) ?? []) {
-      let h = 0;
-      for (const ch of word) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-      vec[h % 32] += 1;
-    }
-    const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0));
-    return vec.map((v) => v / (norm || 1));
-  }
-
-  return {
-    embedCalls,
-    generateCalls,
-    /** @param {string | string[]} input */
-    async embed(input) {
-      const inputs = Array.isArray(input) ? input : [input];
-      embedCalls.push(inputs);
-      return inputs.map(embedOne);
-    },
-    /** Grounded-model stand-in: answers only from excerpt 1 in the prompt. */
-    async generate({ prompt }) {
-      generateCalls.push({ prompt });
-      const start = prompt.indexOf('[_excerpt 1');
-      const body = start === -1 ? '(no excerpts)' : prompt.slice(prompt.indexOf('\n', start) + 1);
-      const firstLine = body.split('\n')[0];
-      return `Grounded answer using: ${firstLine.slice(0, 80)}`;
-    },
-  };
-}
-
-/** In-memory Qdrant stand-in with real cosine ranking. */
-function makeFakeQdrant() {
-  /** @type {Map<string, { vector: number[], payload: Record<string, unknown> }>} */
-  const points = new Map();
-  /** @type {string[]} */
-  const calls = [];
-  return {
-    calls,
-    size: () => points.size,
-    has: (id) => points.has(id),
-    async ensureCollection(vectorSize) {
-      calls.push(`ensureCollection:${vectorSize}`);
-    },
-    /** @param {{ id: string, vector: number[], payload: Record<string, unknown> }[]} pts */
-    async upsertPoints(pts) {
-      calls.push(`upsert:${pts.length}`);
-      for (const p of pts) points.set(p.id, { vector: p.vector, payload: p.payload });
-    },
-    /**
-     * @param {number[]} vector
-     * @param {{ limit?: number }} [opts]
-     */
-    async search(vector, { limit = 4 } = {}) {
-      calls.push(`search:${limit}`);
-      const scored = [...points.values()].map((p) => {
-        const dot = p.vector.reduce((s, v, i) => s + v * vector[i], 0);
-        const nv = Math.sqrt(p.vector.reduce((s, v) => s + v * v, 0));
-        return { id: String(p.payload.id), score: dot / (nv || 1), payload: p.payload };
-      });
-      return scored.sort((a, b) => b.score - a.score).slice(0, limit);
-    },
-    async deleteByDocument(documentId) {
-      calls.push(`deleteByDocument:${documentId}`);
-      for (const [id, p] of [...points]) {
-        if (p.payload.document_id === documentId) points.delete(id);
-      }
-    },
-  };
-}
 
 const CONFIG = Object.freeze({
   OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
