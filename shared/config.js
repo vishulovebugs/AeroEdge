@@ -39,6 +39,12 @@ export const OPTIONAL_DEFAULTS = Object.freeze({
   // Enterprise documents arrive pre-trusted: ingestion stamps
   // jev_status 'not_applicable' — no JEV pass on controlled enterprise input.
   QDRANT_CLOUD_COLLECTION: 'aeroedge_cloud_docs',
+  // Phase 8: cloud-side stores for synced technician knowledge and the sync
+  // audit trail. Separate from enterprise documents (different trust path:
+  // synced field memories arrive edge-JEV'd, fleet-truth only after the
+  // Phase 10 Cloud Pass) and from the edge instance entirely.
+  QDRANT_CLOUD_MEMORY_COLLECTION: 'aeroedge_cloud_memories',
+  QDRANT_CLOUD_SYNC_COLLECTION: 'aeroedge_cloud_sync_events',
 });
 
 /** Error thrown for any configuration problem (missing file, missing or empty variable). */

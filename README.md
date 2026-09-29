@@ -6,7 +6,7 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 7 — Edge Provisioning.** Phase 0 delivered the repo skeleton
+> **Status: Phase 8 — Sync Engine.** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
@@ -28,9 +28,13 @@ JEV decides what's allowed to become knowledge.
 > prioritization under a device-sized cap, and an idempotent snapshot/
 > delta transfer of EXACT vectors into Qdrant Edge. The edge device gets
 > only the knowledge relevant to it, never the whole enterprise database.
-> No edge→cloud sync, no versioning/conflict detection (later phases); no
-> cloud pass, no conflict resolution (Phase 10 by design); no UI
-> (Phase 11).
+> Phase 8 closes the loop edge → cloud: on reconnection, a content-fingerprint
+> change detector builds a DELTA of what changed since the last sync point,
+> filtered by the Phase 4/5 verdict table (accept_local routed for sync or
+> used; flag_risk tagged high-visibility; needs_more_evidence never
+> eligible), and the cloud-side ingest persists the memories plus one
+> `SyncEvent` per item. No conflict detection/version comparison
+> (Phase 9), no Cloud Pass (Phase 10), no UI (Phase 11).
 
 ## Requirements
 
@@ -307,6 +311,56 @@ const result = await prov.provisionEdgeDevice({
 - Scope: cloud → edge ONLY. No edge→cloud sync, no versioning/conflict
   detection (later phases).
 
+### Sync Engine (Phase 8) — edge → cloud
+
+Local changes reach the cloud on reconnection as a DELTA, never a full
+resync:
+
+```
+local memories → change detector (vs sync ledger) → eligibility filter
+  (Phase 4/5 verdict table) → delta package → cloud ingest
+  → per-item SyncEvent → legal lifecycle transitions to `synced`
+```
+
+```js
+import { createSyncEngine } from './edge/syncEngine.js';
+import { createCloudSyncIngest } from './cloud/sync.js';
+
+const syncEngine = createSyncEngine({ memoryStore, deviceId: 'device-01' });
+const cloud = createCloudSyncIngest({ config });
+
+// One sync round (wire `ingestDelta` to whatever transport reconnects):
+const result = await syncEngine.syncNow((pkg) => cloud.ingestDelta(pkg));
+// { synced, rejected, syncedIds, rejectedIds }
+```
+
+- **Change detection is content-based**: a SHA-256 fingerprint of content
+  + revision lineage per memory, compared against a sync ledger. Lifecycle
+  bookkeeping (new → local → used) is NEVER a false positive; a technician
+  revision is. Second rounds transfer nothing (true delta).
+- **Eligibility is the Phase 4/5 verdict table, re-read**: `accept_local`
+  rides when the Orchestrator routed it (`sync_pending` by importance, or
+  `used` — proven locally useful); `flag_risk` IS sync-eligible and is
+  tagged `highVisibility` in the delta (a human must see it — never
+  auto-propagatable downstream); `needs_more_evidence` is NEVER eligible
+  (verdict veto, defense in depth, even against lifecycle drift);
+  unrouted/withdrawn/unevaluated memories never ride; session notes and
+  manuals never sync.
+- **Cloud side**: `createCloudSyncIngest` stores memories in
+  `QDRANT_CLOUD_MEMORY_COLLECTION` (default `aeroedge_cloud_memories`) —
+  edge-JEV'd technician knowledge, fleet context but NOT fleet truth until
+  the Cloud Pass validates it — and persists one contract-validated
+  `SyncEvent` per item in `QDRANT_CLOUD_SYNC_COLLECTION` (the audit
+  trail). Malformed items are rejected per-item, never crashing the batch;
+  `expire` deletes the cloud copy.
+- **Edge acks are legal transitions only**: applied items advance through
+  `shared/lifecycle.js` to `synced` (sync_pending → synced; local/used
+  compose the legal chain). Rejected items stay untouched and ride the
+  next delta.
+- Scope: edge → cloud transport and eligibility ONLY. No conflict
+  detection/version comparison (Phase 9), no Cloud Pass (Phase 10), no
+  propagation of flagged knowledge.
+
 ### Memory orchestrator (Phase 4)
 
 Technician knowledge is a first-class `Memory` record (shared/schemas.js),
@@ -366,11 +420,13 @@ required variable. Optional variables must be passed explicitly, e.g.
 edge/      Edge-side runtime: rag.js (pipeline), retrieval.js (hybrid search),
            session.js (diagnostic session memory), memoryStore.js +
            orchestrator.js (memory lifecycle), jev.js (Edge Pass judge),
-           chunker.js, ollama.js + qdrant.js clients
+           syncEngine.js (delta sync → cloud), chunker.js, ollama.js +
+           qdrant.js clients
 cloud/     Cloud-side runtime: knowledge.js (enterprise ingestion → Qdrant
            Cloud, pre-trusted, no JEV pass), provisioning.js (scoped,
-           prioritized edge provisioning → Qdrant Edge); fleet sync +
-           Cloud Pass JEV arrive in later phases
+           prioritized edge provisioning → Qdrant Edge), sync.js (delta
+           ingest + SyncEvent audit trail); Cloud Pass JEV arrives in a
+           later phase
 ui/        Technician-facing UI (vanilla CSS) — later phases
 shared/    Cross-side contracts: config loading, data schemas, and the
            lifecycle state machine (shared/lifecycle.js)
