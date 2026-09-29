@@ -49,11 +49,19 @@ test('memory orchestrator: offline observation stored separately with explicit l
 
   const { createRagPipeline } = await import('../../edge/rag.js');
   const { createMemoryStore } = await import('../../edge/memoryStore.js');
-  const { createMemoryOrchestrator } = await import('../../edge/orchestrator.js');
+  const { createMemoryOrchestrator, stubVerdictSource } = await import('../../edge/orchestrator.js');
 
   const pipeline = createRagPipeline({ config: loaded.config });
   const memoryStore = createMemoryStore({ config: loaded.config });
-  const orchestrator = createMemoryOrchestrator({ config: loaded.config, memoryStore });
+  // The stub verdict source is pinned EXPLICITLY: this test verifies Phase 4
+  // routing semantics in isolation. Since Phase 5 the default verdict source
+  // is the real Edge JEV Pass (edge/jev.js), whose live verdicts are
+  // nondeterministic by design and covered by test/integration/jev.test.js.
+  const orchestrator = createMemoryOrchestrator({
+    config: loaded.config,
+    memoryStore,
+    verdictSource: stubVerdictSource,
+  });
 
   // An authoritative manual document goes into the DOCUMENT pipeline.
   await pipeline.ingestDocument({
@@ -98,14 +106,14 @@ test('memory orchestrator: offline observation stored separately with explicit l
     const manuals = await memoryStore.listMemories({ memoryType: 'manual' });
     assert.equal(manuals.length, 0, 'no manual documents leaked into the memory store');
 
-    // Routing with the stub verdict: importance 0.6 < 0.7 → KEEP_LOCAL,
-    // stored transitions new → local / pending → accept_local.
+    // Routing with the pinned stub verdict: importance 0.6 < 0.7 →
+    // KEEP_LOCAL, stored transitions new → local / pending → accept_local.
     const decision = await orchestrator.routeWithVerdict(observation);
     assert.equal(decision.action, 'KEEP_LOCAL');
     await orchestrator.applyRoute(decision);
     const after = await memoryStore.getMemory(observation.memory_id);
     assert.equal(after.lifecycle_status, 'local', 'routing result is stored, not inferred at read time');
-    assert.equal(after.jev_status, 'accept_local', 'stub verdict recorded; still NOT validated');
+    assert.equal(after.jev_status, 'accept_local', 'pinned stub verdict recorded; still NOT validated');
   } finally {
     await memoryStore.deleteMemory(observation.memory_id);
     const { createQdrantClient } = await import('../../edge/qdrant.js');

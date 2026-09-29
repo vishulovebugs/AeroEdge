@@ -156,9 +156,20 @@ test('routing: UPDATE on explicit updateOf (never for session_note or expired pa
   );
 });
 
-test('routing: non-accept_local verdicts are refused loudly (Phase 5 wires them for real)', () => {
-  for (const verdict of ['needs_more_evidence', 'flag_risk', 'validated', 'needs_human_review', 'rejected']) {
-    assert.throws(() => routeMemory(memory(), { verdict }), new RegExp(`"${verdict}" requires the JEV/sync machinery`));
+test('routing: edge verdicts are real rows (Phase 5); cloud-only verdicts still refuse loudly', () => {
+  // Phase 5 wired these for real — neither may SYNC, neither may discard.
+  const hold = routeMemory(memory({ importance: 0.95 }), { verdict: 'needs_more_evidence' });
+  assert.equal(hold.action, 'KEEP_LOCAL', 'under-evidenced records are never sync-eligible, however important');
+  assert.match(hold.reason, /NOT sync-eligible/);
+
+  const flagged = routeMemory(memory({ importance: 0.95 }), { verdict: 'flag_risk' });
+  assert.equal(flagged.action, 'KEEP_LOCAL');
+  assert.match(flagged.reason, /high-visibility/);
+
+  // Cloud-side verdicts: the Edge Pass cannot produce them, so routing on
+  // one would be fiction — still a loud refusal.
+  for (const verdict of ['validated', 'needs_human_review', 'rejected']) {
+    assert.throws(() => routeMemory(memory(), { verdict }), new RegExp(`"${verdict}" is a cloud-side verdict`));
   }
   assert.throws(() => routeMemory(memory(), /** @type {any} */ ({ verdict: 'banana' })), /unknown verdict/);
   assert.throws(() => routeMemory(memory(), /** @type {any} */ (null)), TypeError);
@@ -333,7 +344,11 @@ test('orchestrator capture paths enforce input validation', async () => {
 });
 
 test('orchestrator: importance crossing the threshold routes SYNC end-to-end (route + apply)', async () => {
-  const { store, orchestrator } = makeOrchestrator();
+  // The stub verdict source is passed EXPLICITLY here: this test isolates
+  // the importance→SYNC rule. Since Phase 5 the default verdict source is
+  // the real Edge JEV Pass, which would evaluate (and coerce when no model
+  // service is present) — that path has its own tests.
+  const { store, orchestrator } = makeOrchestrator({ verdictSource: stubVerdictSource });
   const record = await orchestrator.captureObservation({
     content: 'Crack pattern repeats on every third shackle.',
     assetId: 'rig-07',

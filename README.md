@@ -6,17 +6,21 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 4 — Memory Orchestrator.** Phase 0 delivered the repo skeleton
+> **Status: Phase 5 — JEV, Edge Pass.** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
-> rerank) with source citations. Phase 3 added diagnostic session memory
-> (elliptical follow-ups resolve; prompts get a compact session summary). Phase
-> 4 adds the memory orchestrator: technician observations are stored as
-> first-class `Memory` records in a dedicated collection, with an explicit,
-> stored lifecycle and a routing function (verdict input stubbed to
-> `accept_local` until the Phase 5 Edge JEV Pass). No real JEV yet, no sync
-> engine, no conflict resolution, no UI.
+> rerank) with source citations. Phase 3 added diagnostic session memory.
+> Phase 4 added the memory orchestrator: technician observations stored as
+> first-class `Memory` records in a dedicated collection with an explicit,
+> stored lifecycle. Phase 5 replaces the stub verdict source with the REAL
+> JEV Edge Pass (`edge/jev.js`): a separate Ollama call that evaluates every
+> field observation against its evidence and targeted authoritative
+> retrieval BEFORE the orchestrator routes it — `accept_local` /
+> `needs_more_evidence` / `flag_risk`, each with a REQUIRED non-empty
+> rationale (empty ones are coerced to `needs_more_evidence` in code), and
+> recording is never blocked. No sync engine, no cloud pass, no conflict
+> resolution (Phase 10 by design), no UI (Phase 11).
 
 ## Requirements
 
@@ -151,6 +155,59 @@ await pipeline.answerQuestion('what about the pressure sensor?', { session });
 - Results from session-aware calls additionally carry `sessionQuery`,
   `usedSessionContext`, and `sessionId`.
 
+### JEV Edge Pass (Phase 5)
+
+RAG answers questions. AeroEdge manages knowledge at the edge. JEV decides
+what's allowed to become knowledge. The Edge Pass is the first of JEV's two
+checkpoints: a fast, local evaluation that runs the moment knowledge is
+recorded — before the orchestrator routes it. (The fleet-aware Cloud Pass is
+a later phase; nothing edge-side is fleet truth.)
+
+```js
+// The capture path: record FIRST, evaluate SECOND, route THIRD.
+const result = await orchestrator.captureAndRoute({
+  content: 'Tightened the B-nut to 80 N·m and the seep stopped.',
+  assetId: 'MSN4453',
+  source: 'technician-jane',
+  evidence: lastEvidencePack, // optional evidence from creation
+});
+// result.verdict → { stage: 'edge', verdict, rationale, confidence,
+//                    risk_flags, evidence_used, model_used, evaluated_at }
+// result.decision / result.applied → the verdict-driven route + stored transitions
+```
+
+- **Separate call, separate role**: the Edge Pass is its own Ollama call
+  (`edge/jev.js buildJEVPrompt`), never the answer generator certifying
+  itself. The judge prompt drives four checks in order: internal
+  consistency → contradiction against authoritative knowledge (safety-
+  critical weighted heaviest) → evidence sufficiency → provisional risk.
+- **Targeted contradiction retrieval**: reuses Phase 2 hybrid retrieval
+  against the authoritative document collection, scoped to the candidate's
+  asset (and subsystem when known). Authoritative docs are high-confidence
+  by construction — Type A material is the baseline truth field knowledge
+  is measured against.
+- **Rationale is the contract**: a model response with a missing/empty
+  rationale is COERCED to `needs_more_evidence` by code (confidence 0,
+  honest code-written rationale) — never passed through. Unparseable
+  output, out-of-contract verdicts, and evaluator crashes coerce the same
+  way. The orchestrator re-checks the same rule at capture time.
+- **Verdict-driven routing** (Phase 4's table, now fully populated):
+
+  | Edge JEV verdict | Orchestrator behavior |
+  |---|---|
+  | `accept_local` | KEEP_LOCAL, or SYNC when importance ≥ 0.7 |
+  | `needs_more_evidence` | KEEP_LOCAL only; technician prompted for more detail; NOT sync-eligible at any importance |
+  | `flag_risk` | KEEP_LOCAL, high-visibility (`jev_status: 'flag_risk'` STORED — queryable via `listMemories({ jevStatus: 'flag_risk' })`); sync-eligible so a human sees it, never auto-propagatable |
+
+- **Hard rule, enforced in code**: JEV never blocks recording.
+  `captureAndRoute` stores the memory before evaluation begins; any
+  evaluator failure only coerces the verdict, never prevents the record.
+- **Verdict + rationale surface immediately** in the capture response
+  (the stored verdict record is contract-validated against
+  `validateJEVVerdict`); full UI arrives in Phase 11.
+- The Phase 4 stub (`stubVerdictSource`) remains exported, opt-in only for
+  tests/debug; the real Edge Pass is the default verdict source.
+
 ### Memory orchestrator (Phase 4)
 
 Technician knowledge is a first-class `Memory` record (shared/schemas.js),
@@ -177,8 +234,9 @@ const obs = await orchestrator.captureObservation({
 // obs.memory_type === 'field_observation', lifecycle_status 'new',
 // jev_status 'pending' — useful locally, authoritative for nothing.
 
-// Routing (verdict source is a parameter — the stub returns accept_local
-// until the Phase 5 Edge JEV Pass replaces it; signature never changes):
+// Routing (verdict source is a parameter — the real Edge JEV Pass is the
+// default since Phase 5; pass stubVerdictSource to route unevaluated;
+// signature never changes):
 const decision = await orchestrator.routeWithVerdict(obs);
 const applied = await orchestrator.applyRoute(decision); // transitions stored
 ```
@@ -208,8 +266,8 @@ required variable. Optional variables must be passed explicitly, e.g.
 ```
 edge/      Edge-side runtime: rag.js (pipeline), retrieval.js (hybrid search),
            session.js (diagnostic session memory), memoryStore.js +
-           orchestrator.js (memory lifecycle), chunker.js, ollama.js +
-           qdrant.js clients; Edge Pass JEV arrives in the next phase
+           orchestrator.js (memory lifecycle), jev.js (Edge Pass judge),
+           chunker.js, ollama.js + qdrant.js clients
 cloud/     Cloud-side runtime (fleet sync, Cloud Pass JEV) — later phases
 ui/        Technician-facing UI (vanilla CSS) — later phases
 shared/    Cross-side contracts: config loading, data schemas, and the
@@ -226,6 +284,10 @@ test/      node:test suites (unit, integration, interconnect) + shared fakes
 - Every writer passes objects through the `validateX()` helpers in `shared/schemas.js`
   before persisting to Qdrant. No module invents its own shape.
 - JEV verdicts always carry non-empty `rationale`, `evidence_used`, `model_used`, `confidence`.
+  An evaluation without a stated reason is not an evaluation — edge/jev.js
+  and the orchestrator both coerce rationale-less results to
+  `needs_more_evidence`. JEV never blocks recording; only what happens
+  AFTER recording depends on the verdict.
 - Memory lifecycle status is explicit and stored; every transition goes
   through `shared/lifecycle.js` — nothing infers a memory's standing at read
   time. Technician memories never live in the authoritative document

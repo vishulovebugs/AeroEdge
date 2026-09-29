@@ -29,6 +29,7 @@ const ENTRYPOINTS = [
   'edge/session.js',
   'edge/memoryStore.js',
   'edge/orchestrator.js',
+  'edge/jev.js',
   'edge/chunker.js',
   'edge/ollama.js',
   'edge/qdrant.js',

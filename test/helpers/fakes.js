@@ -17,7 +17,7 @@ export const denyAllFetch = /** @type {typeof fetch} */ (
 );
 
 /** Deterministic fake embedder: normalized word-bucket vectors. */
-export function makeFakeOllama() {
+export function makeFakeOllama({ respond } = {}) {
   /** @type {string[][]} */
   const embedCalls = [];
   /** @type {{system: string, prompt: string}[]} */
@@ -44,9 +44,15 @@ export function makeFakeOllama() {
       embedCalls.push(inputs);
       return inputs.map(embedOne);
     },
-    /** Grounded-model stand-in: answers only from excerpt 1 in the prompt. */
+    /** Grounded-model stand-in: answers only from excerpt 1 in the prompt,
+     * unless a scriptable `respond({ prompt })` was provided (Phase 5 JEV
+     * tests script verdict JSON through this hook; the answer-generation
+     * behavior above stays the no-script default). */
     async generate({ prompt }) {
       generateCalls.push({ prompt });
+      if (typeof respond === 'function') {
+        return respond({ prompt });
+      }
       const start = prompt.indexOf('[_excerpt 1');
       const body = start === -1 ? '(no excerpts)' : prompt.slice(prompt.indexOf('\n', start) + 1);
       const firstLine = body.split('\n')[0];
@@ -93,6 +99,39 @@ function evalFilter(filter, payload) {
   const should = /** @type {any[]} */ (filter.should ?? []);
   if (should.length > 0 && !should.some((c) => evalClause(c, payload))) return false;
   return true;
+}
+
+/**
+ * Serialize a JEV-shaped response object the way a small local model would
+ * emit it: a JSON object, optionally wrapped in a code fence / prose.
+ * @param {Record<string, unknown>} body
+ * @param {{ fenced?: boolean }} [opts]
+ * @returns {string}
+ */
+export function jevResponse(body, { fenced = false } = {}) {
+  const json = JSON.stringify(body);
+  return fenced ? `\`\`\`here is my assessment:\n${json}\n\`\`\`` : json;
+}
+
+/**
+ * A scripted JEV responder: pops one raw response per generate() call and
+ * keeps returning the last one (later calls than scripted are common when
+ * evaluation retries retrieval). Records every prompt it saw.
+ * @param {string[]} responses Raw model responses in order.
+ */
+export function makeScriptedJev(responses) {
+  if (!Array.isArray(responses) || responses.length === 0) {
+    throw new TypeError('makeScriptedJev requires a non-empty response array');
+  }
+  const seenPrompts = [];
+  return {
+    seenPrompts,
+    respond({ prompt }) {
+      seenPrompts.push(prompt);
+      const next = Math.min(seenPrompts.length - 1, responses.length - 1);
+      return responses[next];
+    },
+  };
 }
 
 /**

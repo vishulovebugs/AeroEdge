@@ -11,16 +11,32 @@
  *   verdict source → routeMemory(memory, verdict, opts) → action
  *                  → applyRoute(memory, route) → persisted transitions
  *
- * The verdict source is a parameter, not a hidden dependency: THIS phase
- * wires `stubVerdictSource` (always `accept_local`) because real JEV does
- * not exist yet. Phase 5 swaps the stub for the Edge Pass WITHOUT changing
- * routeMemory's signature — the routing function takes the verdict as an
- * explicit input.
+ * The verdict source is a parameter, not a hidden dependency, and
+ * routeMemory's signature treats the verdict as an EXPLICIT input — it
+ * never changed shape when Phase 5 swapped the Phase 4 stub for the real
+ * Edge JEV Pass (edge/jev.js), which is now the DEFAULT verdict source.
+ * `stubVerdictSource` is kept exported for tests and debugging.
  *
- * What this phase deliberately does NOT do: no real JEV reasoning, no sync
- * engine (SYNC only marks the stored `sync_pending` state), no conflict
- * resolution (FLAG_CONFLICT is defined and rejected at runtime until Phase 5
- * can produce a real conflict verdict), no UI.
+ * Phase 5 verdict-driven routing (the real table, per the JEV Edge Pass):
+ *   accept_local        → KEEP_LOCAL, or SYNC when importance ≥ 0.7
+ *   needs_more_evidence → KEEP_LOCAL only; NEVER sync-eligible, however
+ *                         high the importance (the record is not yet
+ *                         trustworthy enough to share)
+ *   flag_risk           → KEEP_LOCAL with the high-visibility flag_risk
+ *                         jev_status STORED on the record; still
+ *                         sync-eligible so a human sees it, but never
+ *                         auto-propagatable (a flag is a call for review,
+ *                         not a truth claim)
+ *
+ * The hard rule, enforced in code: JEV NEVER BLOCKS RECORDING.
+ * captureAndRoute/captureSessionNote store the memory FIRST; evaluation
+ * runs after the record is durably stored, and any evaluator failure is
+ * coerced to needs_more_evidence (never an exception at capture time).
+ *
+ * What this phase deliberately does NOT do: no sync engine (SYNC only
+ * marks the stored `sync_pending` state), no conflict resolution
+ * (FLAG_CONFLICT still refuses loudly — real conflicts need fleet
+ * context, Phase 10), no cloud pass, no UI.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -30,7 +46,10 @@ import {
   initialStatusFor,
 } from '../shared/lifecycle.js';
 import { createMemoryStore } from './memoryStore.js';
-import { validateMemory } from '../shared/schemas.js';
+import { createOllamaClient } from './ollama.js';
+import { createQdrantClient } from './qdrant.js';
+import { createEdgeJev } from './jev.js';
+import { validateMemory, validateJEVVerdict } from '../shared/schemas.js';
 
 /**
  * @typedef {import('../shared/schemas.js').Memory} Memory
@@ -55,13 +74,12 @@ export const SYNC_IMPORTANCE_THRESHOLD = 0.7;
  */
 
 /**
- * Stub verdict source (Phase 4 stand-in for the Edge JEV Pass).
+ * Stub verdict source (Phase 4 stand-in, kept for tests and debugging).
  *
- * Always returns `accept_local` — the point of the stub is to make the
- * WIRING real while the reasoning is not built yet. Returns a Promise-shaped
- * interface so Phase 5's real evaluator (which will call Ollama with
- * evidence) can drop in without any caller changes. Callers may attach
- * `evidence`/`question`; the stub ignores them by design.
+ * Always returns `accept_local` — real evaluation lives in edge/jev.js,
+ * which is now the DEFAULT verdict source. Pass this stub explicitly via
+ * `verdictSource` to route with reasoning disabled. Promise-shaped so the
+ * two are interchangeable at every call site.
  *
  * @param {Object} [context]
  * @param {Memory} [context.memory]
@@ -120,14 +138,17 @@ function normalizeVerdict(verdictInput) {
  *   EXPIRE: explicit request; any non-manual, non-expired memory expires.
  *   UPDATE: explicit revision request (`opts.updateOf`) — the revision is
  *           stored as a NEW version with lineage, never a silent overwrite.
- *   verdict accept_local (the only verdict producible this phase):
+ *   accept_local (Edge Pass accepted for local use):
  *     - session_note                       → KEEP LOCAL (working memory)
  *     - already synced / sync_pending      → KEEP LOCAL (routing again is a no-op)
  *     - importance ≥ 0.7                   → SYNC (mark stored sync_pending)
  *     - otherwise                          → KEEP LOCAL
- *   needs_more_evidence / flag_risk / rejected → FLAG_CONFLICT-only phase:
- *     these require the sync/JEV machinery of later phases, so routing
- *     throws a loud, named error instead of pretending to decide.
+ *   needs_more_evidence: KEEP LOCAL only — NEVER sync-eligible, however
+ *     high the importance; the technician is prompted for more detail.
+ *   flag_risk: KEEP LOCAL — high-visibility (stored flag_risk jev_status);
+ *     still sync-eligible so a human sees it, never auto-propagatable.
+ *   Cloud-only verdicts (validated/needs_human_review/rejected) throw:
+ *     the Edge Pass cannot produce them.
  *
  * Pure: computes the decision, does not persist or mutate anything.
  *
@@ -176,10 +197,71 @@ export function routeMemory(memory, verdictInput, opts = {}) {
     };
   }
 
+  // Phase 5: the verdict-driven rows are real. Cloud-only verdicts
+  // (validated/needs_human_review/rejected) still refuse loudly — the Edge
+  // Pass (edge/jev.js) never produces them, and routing on a verdict the
+  // edge cannot even produce would be fiction.
+  if (verdict.verdict === 'needs_more_evidence') {
+    if (memory.memory_type === 'session_note') {
+      return {
+        action: 'KEEP_LOCAL',
+        memory,
+        reason: 'session note: working memory, never synced (needs_more_evidence noted)',
+        verdict: verdict.verdict,
+      };
+    }
+    if (lifecycle === 'synced' || lifecycle === 'sync_pending') {
+      return {
+        action: 'KEEP_LOCAL',
+        memory,
+        reason: `already ${lifecycle}: re-routing is a no-op (needs_more_evidence does not withdraw it)`,
+        verdict: verdict.verdict,
+      };
+    }
+    // NEVER sync-eligible, however high the importance: a record the
+    // evaluator judged under-evidenced must not ride the sync table on
+    // importance alone.
+    return {
+      action: 'KEEP_LOCAL',
+      memory,
+      reason:
+        `needs_more_evidence: kept local and NOT sync-eligible regardless of importance ` +
+        `(${memory.importance}); technician prompted for more detail`,
+      verdict: verdict.verdict,
+    };
+  }
+
+  if (verdict.verdict === 'flag_risk') {
+    if (memory.memory_type === 'session_note') {
+      return {
+        action: 'KEEP_LOCAL',
+        memory,
+        reason: 'session note: working memory, never synced (risk noted on the record)',
+        verdict: verdict.verdict,
+      };
+    }
+    if (lifecycle === 'synced' || lifecycle === 'sync_pending') {
+      return {
+        action: 'KEEP_LOCAL',
+        memory,
+        reason: `already ${lifecycle}: re-routing is a no-op (flag_risk does not withdraw it)`,
+        verdict: verdict.verdict,
+      };
+    }
+    return {
+      action: 'KEEP_LOCAL',
+      memory,
+      reason:
+        'flag_risk: kept local, high-visibility (jev_status flag_risk stored); ' +
+        'sync-eligible so a human sees it, never auto-propagatable',
+      verdict: verdict.verdict,
+    };
+  }
+
   if (verdict.verdict !== 'accept_local') {
     throw new TypeError(
-      `routeMemory: verdict "${verdict.verdict}" requires the JEV/sync machinery of later phases; ` +
-        'this phase routes only accept_local (stub). Refusing to decide silently.'
+      `routeMemory: verdict "${verdict.verdict}" is a cloud-side verdict (Cloud Pass, later phases); ` +
+        'the Edge Pass routes only accept_local | needs_more_evidence | flag_risk. Refusing to decide silently.'
     );
   }
 
@@ -225,13 +307,90 @@ export function routeMemory(memory, verdictInput, opts = {}) {
  * @param {Readonly<Record<string, string>>} config Loaded shared config (required unless a memoryStore is injected).
  * @param {ReturnType<typeof createMemoryStore>} [memoryStore] Injected store (tests); built from config otherwise.
  * @param {import('./session.js').SessionState} [session] Attached diagnostic session (Phase 3) — observations are mirrored into it.
- * @param {(context?: unknown) => Promise<{ verdict: string, [k: string]: unknown }>} [verdictSource] Verdict source (defaults to the stub; Phase 5 replaces it).
+ * @param {(context?: { memory?: Memory, question?: string, evidence?: unknown[] }) => Promise<{ verdict: string, [k: string]: unknown }>} [verdictSource] Verdict source override. DEFAULT since Phase 5: the real JEV Edge Pass (edge/jev.js). Pass stubVerdictSource to route with evaluation disabled (tests).
+ * @param {ReturnType<typeof import('./ollama.js').createOllamaClient>} [ollama] Injected Ollama client for the DEFAULT Edge Pass (tests); built from config otherwise.
+ * @param {ReturnType<typeof import('./qdrant.js').createQdrantClient>} [qdrant] Injected Edge Qdrant DOCUMENT client for the DEFAULT Edge Pass (tests); built from config otherwise.
  */
-export function createMemoryOrchestrator({ config, memoryStore: injectedStore, session, verdictSource } = {}) {
-  const getVerdict = verdictSource ?? stubVerdictSource;
+export function createMemoryOrchestrator({ config, memoryStore: injectedStore, session, verdictSource, ollama, qdrant } = {}) {
   const store = injectedStore ?? createMemoryStore({ config });
   /** @type {SessionState|null} */
   let attachedSession = session ?? null;
+
+  /**
+   * The default verdict source: the real JEV Edge Pass (edge/jev.js).
+   * Built lazily against the authoritative document collection on the Edge
+   * Qdrant instance; the injected `verdictSource` (tests, stub) takes
+   * precedence when provided.
+   */
+  let edgeJev = null;
+  function getEdgeJev() {
+    if (edgeJev === null) {
+      edgeJev = createEdgeJev({
+        config: config ?? {},
+        ollama:
+          ollama ??
+          createOllamaClient({
+            baseUrl: config?.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434',
+            embedModel: config?.EMBEDDING_MODEL ?? 'nomic-embed-text',
+            generateModel: config?.OLLAMA_MODEL ?? 'unknown',
+          }),
+        qdrant:
+          qdrant ??
+          createQdrantClient({
+            baseUrl: config?.QDRANT_EDGE_URL ?? 'http://localhost:6333',
+            collection: config?.QDRANT_EDGE_COLLECTION ?? 'aeroedge_edge_docs',
+          }),
+      });
+    }
+    return edgeJev;
+  }
+
+  /**
+   * Call the configured verdict source for a memory. The default runs the
+   * real Edge Pass; injected sources (tests, stub) pass through untouched.
+   * @param {Memory} memory
+   * @param {{ question?: string, evidence?: unknown[] }} [context]
+   */
+  async function getVerdict(memory, context = {}) {
+    if (verdictSource !== undefined) return verdictSource({ memory, ...context });
+    return getEdgeJev().evaluateMemory(memory, {
+      ...(context.evidence !== undefined ? { evidencePack: /** @type {any} */ (context.evidence) } : {}),
+    });
+  }
+
+  /**
+   * Stamp memory identity onto a verdict-source result and validate it
+   * against the Phase 0 JEVVerdict contract, so the verdict persisted next
+   * to the memory is always contract-clean. Returns null (no verdict record
+   * stored) when the source result is too thin to be an evaluation — a
+   * record without a non-empty rationale must never be persisted, per the
+   * same rule that governs the model side.
+   * @param {{ verdict: string, [k: string]: unknown }} verdictInput
+   * @param {string} memoryId
+   * @returns {Record<string, unknown>|null}
+   */
+  function buildVerdictRecord(verdictInput, memoryId) {
+    if (verdictInput === null || typeof verdictInput !== 'object') return null;
+    const rationale = typeof verdictInput.rationale === 'string' ? verdictInput.rationale.trim() : '';
+    const modelUsed = typeof verdictInput.model_used === 'string' ? verdictInput.model_used.trim() : '';
+    if (rationale === '' || modelUsed === '') return null;
+    const record = {
+      verdict_id: `jev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+      memory_id: memoryId,
+      stage: typeof verdictInput.stage === 'string' && verdictInput.stage !== '' ? verdictInput.stage : 'edge',
+      verdict: verdictInput.verdict,
+      rationale,
+      confidence: typeof verdictInput.confidence === 'number' && Number.isFinite(verdictInput.confidence)
+        ? Math.min(1, Math.max(0, verdictInput.confidence))
+        : 0,
+      risk_flags: Array.isArray(verdictInput.risk_flags) ? verdictInput.risk_flags.filter((f) => typeof f === 'string') : [],
+      evidence_used: Array.isArray(verdictInput.evidence_used) ? verdictInput.evidence_used.filter((e) => typeof e === 'string') : [],
+      model_used: modelUsed,
+      evaluated_at: typeof verdictInput.evaluated_at === 'string' ? verdictInput.evaluated_at : new Date().toISOString(),
+    };
+    const check = validateJEVVerdict(record);
+    return check.valid ? record : null;
+  }
 
   /** @param {SessionState|null} s */
   function requireSessionState(s) {
@@ -312,6 +471,104 @@ export function createMemoryOrchestrator({ config, memoryStore: injectedStore, s
   }
 
   /**
+   * THE Phase 5 capture path: record FIRST, evaluate SECOND, route THIRD.
+   *
+   * Hard rule enforced HERE, in code (not merely in the JEV prompt): JEV
+   * never blocks the technician from recording what they observed. The
+   * memory is durably stored before evaluation begins; an evaluator error,
+   * timeout, or garbage response can only change what happens AFTER
+   * recording (it coerces to needs_more_evidence), never prevent it.
+   *
+   * @param {Object} input Same fields as captureObservation.
+   * @param {string} input.content
+   * @param {string} input.assetId
+   * @param {string} input.source
+   * @param {string} [input.component]
+   * @param {number} [input.importance]
+   * @param {number} [input.confidence]
+   * @param {unknown} [input.evidence] Evidence pack from creation (Phase 1 pipeline retrieveEvidence output), passed to the Edge Pass when present.
+   * @param {boolean} [input.route=true] Set false to record WITHOUT routing (verdict can be applied later via routeWithVerdict/applyRoute).
+   * @returns {Promise<{ memory: Memory, recorded: true, verdict: Record<string, unknown>, decision: RouteDecision, applied: { memory: Memory, action: string, transitions: string[] } | null }>}
+   *   `memory` is the record as FIRST stored (lifecycle new, jev pending);
+   *   `verdict` is the contract-clean JEVVerdict persisted for it;
+   *   `decision`/`applied` carry the verdict-driven route and its stored
+   *   transitions (applied is null only when route=false).
+   */
+  async function captureAndRoute({ content, assetId, source, component, importance = 0.4, confidence = 0.5, evidence, route = true }) {
+    // STEP 1 — RECORD. Storage precedes evaluation unconditionally.
+    const stored = await captureObservation({ content, assetId, source, component, importance, confidence });
+
+    // STEP 2 — EVALUATE. Failures coerce, never throw past the recording.
+    const evidencePack = normalizeEvidencePack(evidence);
+    let verdictInput;
+    try {
+      verdictInput = await getVerdict(stored, {
+        ...(evidencePack !== undefined ? { evidence: evidencePack } : {}),
+      });
+    } catch (err) {
+      verdictInput = {
+        verdict: 'needs_more_evidence',
+        rationale:
+          `Edge Pass evaluator failed after recording (${/** @type {Error} */ (err).message}). ` +
+          'Coerced to needs_more_evidence by code: recording is never blocked by evaluation.',
+        confidence: 0,
+        risk_flags: [],
+        evidence_used: [],
+        model_used: 'aeroedge-edge-jev',
+        evaluated_at: new Date().toISOString(),
+        stage: 'edge',
+      };
+    }
+
+    // STEP 3 — SURFACE VERDICT + ROUTE. A verdict without a non-empty
+    // rationale is not an evaluation (same rule as edge/jev.js): it is
+    // coerced to needs_more_evidence, never passed through as a pass.
+    const rationale = typeof verdictInput.rationale === 'string' ? verdictInput.rationale.trim() : '';
+    const effective = rationale === ''
+      ? {
+          ...verdictInput,
+          verdict: 'needs_more_evidence',
+          confidence: 0,
+          rationale:
+            'Edge Pass verdict coerced by code: the evaluator produced no non-empty rationale. ' +
+            'A JEV evaluation requires a stated reason; without one the record cannot pass.',
+        }
+      : verdictInput;
+    const verdictRecord = buildVerdictRecord(effective, stored.memory_id) ??
+      buildFallbackVerdictRecord(effective, stored.memory_id);
+
+    /** @type {RouteDecision} */
+    const decision = routeMemory(stored, effective);
+    const applied = route ? await applyRoute(decision) : null;
+    return { memory: stored, recorded: true, verdict: verdictRecord, decision, applied };
+  }
+
+  /**
+   * Contract-valid verdict record for coerced results whose source shape
+   * could not satisfy buildVerdictRecord (e.g. a missing model_used).
+   * @param {{ verdict: string, rationale: string, confidence?: number, risk_flags?: unknown, evidence_used?: unknown, model_used?: string, evaluated_at?: string }} input
+   * @param {string} memoryId
+   * @returns {Record<string, unknown>}
+   */
+  function buildFallbackVerdictRecord(input, memoryId) {
+    const record = {
+      verdict_id: `jev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+      memory_id: memoryId,
+      stage: 'edge',
+      verdict: 'needs_more_evidence',
+      rationale: input.rationale,
+      confidence: 0,
+      risk_flags: [],
+      evidence_used: [],
+      model_used: 'aeroedge-edge-jev',
+      evaluated_at: new Date().toISOString(),
+    };
+    const check = validateJEVVerdict(record);
+    if (!check.valid) throw new Error(`coerced JEVVerdict failed contract validation: ${check.errors.join('; ')}`);
+    return record;
+  }
+
+  /**
    * Capture a session note (Type B working memory) tied to the session.
    * @param {Object} input
    * @param {string} input.content
@@ -389,17 +646,36 @@ export function createMemoryOrchestrator({ config, memoryStore: injectedStore, s
   }
 
   /**
-   * Ask the verdict source (stub now, Edge JEV Pass in Phase 5) and route.
+   * Accept an evidence argument from callers: a bare EvidencePack, a
+   * single-element array wrapping one, or nothing.
+   * @param {unknown} evidence
+   * @returns {unknown|undefined}
+   */
+  function normalizeEvidencePack(evidence) {
+    if (evidence === null || evidence === undefined) return undefined;
+    if (Array.isArray(evidence)) {
+      return evidence.length === 1 && evidence[0] !== null && typeof evidence[0] === 'object' && Array.isArray(evidence[0].chunks)
+        ? evidence[0]
+        : undefined;
+    }
+    return typeof evidence === 'object' && Array.isArray(evidence.chunks) ? evidence : undefined;
+  }
+
+  /**
+   * Ask the verdict source (the real Edge JEV Pass by default) and route.
    * @param {Memory} memory
    * @param {Object} [opts]
    * @param {boolean} [opts.expire]
    * @param {string} [opts.updateOf]
    * @param {string} [opts.question] Context for the verdict source.
-   * @param {unknown[]} [opts.evidence] Evidence for the verdict source.
+   * @param {unknown} [opts.evidence] Evidence pack (or 1-element array of one) for the verdict source.
    * @returns {Promise<RouteDecision>}
    */
   async function routeWithVerdict(memory, opts = {}) {
-    const verdictInput = await getVerdict({ memory, question: opts.question, evidence: opts.evidence });
+    const verdictInput = await getVerdict(memory, {
+      question: opts.question,
+      evidence: normalizeEvidencePack(opts.evidence),
+    });
     return routeMemory(memory, verdictInput, { expire: opts.expire, updateOf: opts.updateOf });
   }
 
@@ -432,9 +708,16 @@ export function createMemoryOrchestrator({ config, memoryStore: injectedStore, s
     if (action === 'EXPIRE') {
       stepLifecycle('expired');
     } else if (action === 'KEEP_LOCAL' || action === 'SYNC') {
-      // Existence acknowledged: new → local, pending → accept_local (stub).
+      // Existence acknowledged: new → local. The JEV transition follows the
+      // verdict that drove the route (Phase 5: all three edge verdicts are
+      // real, stored states — flagged records must stay VISIBLY flagged,
+      // not silently pass as accepted).
       if (record.lifecycle_status === 'new') stepLifecycle('local');
-      if (record.jev_status === 'pending' && decision.verdict === 'accept_local') stepJev('accept_local');
+      if (record.jev_status === 'pending') {
+        if (decision.verdict === 'accept_local') stepJev('accept_local');
+        else if (decision.verdict === 'needs_more_evidence') stepJev('needs_more_evidence');
+        else if (decision.verdict === 'flag_risk') stepJev('flag_risk');
+      }
       if (action === 'SYNC' && record.lifecycle_status !== 'sync_pending') stepLifecycle('sync_pending');
     } else if (action === 'UPDATE') {
       // UPDATE stores a NEW version with lineage; the parent is never
@@ -516,9 +799,23 @@ export function createMemoryOrchestrator({ config, memoryStore: injectedStore, s
       jev_status: parent.memory_type === 'manual' ? 'not_applicable' : 'pending',
       revision_of: parent.memory_id,
     });
-    const verdictInput = await getVerdict({ memory: revision });
-    const decision = routeMemory(revision, verdictInput, { updateOf: parent.memory_id });
-    return applyRoute(decision);
+    const verdictInput = await getVerdict(revision);
+    // Step 1: the UPDATE route stores the revision as a new version (this
+    // decision consumes the verdict only as metadata).
+    const updateDecision = routeMemory(revision, verdictInput, { updateOf: parent.memory_id });
+    const updateApplied = await applyRoute(updateDecision);
+    // Step 2 (Phase 5): the stored revision is then routed like any other
+    // memory under its own verdict — a revised record is never left
+    // un-routed with a stale 'pending' standing.
+    const storedRevision = /** @type {Memory} */ (/** @type {unknown} */ (updateApplied.memory));
+    const verdictDecision = routeMemory(storedRevision, verdictInput);
+    const verdictApplied = await applyRoute(verdictDecision);
+    return {
+      ...verdictApplied,
+      action: 'UPDATE',
+      verdictRoute: verdictApplied.action,
+      revisionOf: parent.memory_id,
+    };
   }
 
   /**
@@ -597,6 +894,7 @@ export function createMemoryOrchestrator({ config, memoryStore: injectedStore, s
 
   return {
     captureObservation,
+    captureAndRoute,
     captureSessionNote,
     captureManual,
     routeWithVerdict,
