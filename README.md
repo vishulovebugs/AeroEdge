@@ -6,7 +6,7 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 6 — Cloud Knowledge Layer.** Phase 0 delivered the repo skeleton
+> **Status: Phase 7 — Edge Provisioning.** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
@@ -22,9 +22,15 @@ JEV decides what's allowed to become knowledge.
 > recording is never blocked. Phase 6 starts the cloud side: enterprise
 > documents ingest into a distinct Qdrant Cloud knowledge store, stamped
 > `jev_status: "not_applicable"` — enterprise input arrives pre-trusted, so
-> NO JEV pass applies to it. No edge provisioning, no sync, no propagation
-> (later phases); no cloud pass, no conflict resolution (Phase 10 by
-> design); no UI (Phase 11).
+> NO JEV pass applies to it. Phase 7 provisions edge devices from that
+> store: target-scoped selection (asset/model/subsystem/job terms —
+> provisioning "everything" is refused by design), deterministic
+> prioritization under a device-sized cap, and an idempotent snapshot/
+> delta transfer of EXACT vectors into Qdrant Edge. The edge device gets
+> only the knowledge relevant to it, never the whole enterprise database.
+> No edge→cloud sync, no versioning/conflict detection (later phases); no
+> cloud pass, no conflict resolution (Phase 10 by design); no UI
+> (Phase 11).
 
 ## Requirements
 
@@ -254,6 +260,53 @@ const out = await cloud.search('what torque applies to the inlet B-nut?');
 - Scope: ingestion and query ONLY. No edge provisioning, no sync, no
   propagation.
 
+### Edge provisioning (Phase 7)
+
+An edge device gets ONLY the knowledge relevant to it — not the whole
+enterprise database. One composed pipeline (cloud/provisioning.js):
+
+```
+CLOUD → determine relevant knowledge → filter by asset/model/subsystem/job
+      → prioritize important memories → create edge snapshot/delta
+      → transfer to device → store in Qdrant Edge
+```
+
+```js
+import { createProvisioning } from './cloud/provisioning.js';
+const prov = createProvisioning({ config });
+
+const result = await prov.provisionEdgeDevice({
+  assetId: 'MSN4453',
+  component: 'hydraulics',
+  jobTerms: ['88-42B'],   // optional exact terms for the job at hand
+}, { maxChunks: 500 });    // device-sized budget (default 500)
+// result: { transferred, documentIds, totalAvailable, truncated,
+//           edgeCollection: 'aeroedge_edge_docs' }
+```
+
+- **Scoped selection is a hard filter**: asset, equipment model, subsystem,
+  and exact job terms combine as Qdrant must-clauses (job terms OR within
+  the leg). Provisioning with no scope is REFUSED — a device never gets
+  "everything". Non-pre-trusted cloud content (anything without the Phase 6
+  `not_applicable` stamp) is never provisioned.
+- **Prioritized, capped, honest**: matching subsets are ranked by cloud
+  importance, then job-term relevance, then deterministic tiebreaks —
+  capped at `maxChunks` with `truncated: true` reported, never silently
+  dumped or silently cut.
+- **Snapshot/delta with exact vectors**: the package carries verbatim
+  content and the CLOUD embedding (transfer never re-embeds, so edge and
+  cloud stay in the same vector space). Edge documents keep cloud document
+  ids, so re-provisioning replaces rather than duplicates.
+- **Provisioned knowledge stays pre-trusted**: chunks arrive with
+  `jev_status: "not_applicable"` — the Edge Pass measures field knowledge
+  AGAINST provisioned docs; it never re-evaluates them.
+- Proven end to end: the interconnect suite provisions a device from a
+  multi-asset cloud store, then runs the full Phase 1–5 stack (grounded
+  answers, hybrid retrieval, session memory, capture + Edge JEV flagging)
+  on the provisioned data with no hand-seeded edge content.
+- Scope: cloud → edge ONLY. No edge→cloud sync, no versioning/conflict
+  detection (later phases).
+
 ### Memory orchestrator (Phase 4)
 
 Technician knowledge is a first-class `Memory` record (shared/schemas.js),
@@ -315,8 +368,9 @@ edge/      Edge-side runtime: rag.js (pipeline), retrieval.js (hybrid search),
            orchestrator.js (memory lifecycle), jev.js (Edge Pass judge),
            chunker.js, ollama.js + qdrant.js clients
 cloud/     Cloud-side runtime: knowledge.js (enterprise ingestion → Qdrant
-           Cloud, pre-trusted, no JEV pass); fleet sync + Cloud Pass JEV
-           arrive in later phases
+           Cloud, pre-trusted, no JEV pass), provisioning.js (scoped,
+           prioritized edge provisioning → Qdrant Edge); fleet sync +
+           Cloud Pass JEV arrive in later phases
 ui/        Technician-facing UI (vanilla CSS) — later phases
 shared/    Cross-side contracts: config loading, data schemas, and the
            lifecycle state machine (shared/lifecycle.js)

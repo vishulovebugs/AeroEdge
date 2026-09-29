@@ -34,6 +34,7 @@ const ENTRYPOINTS = [
   'edge/ollama.js',
   'edge/qdrant.js',
   'cloud/knowledge.js',
+  'cloud/provisioning.js',
   'shared/config.js',
   'shared/schemas.js',
   'shared/lifecycle.js',

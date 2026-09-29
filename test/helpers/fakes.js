@@ -197,19 +197,24 @@ export function makeFakeQdrant({ collection = 'aeroedge_edge_docs' } = {}) {
      * Phase 4 memory store). Returns REAL point ids (Map keys), matching the
      * real Qdrant scroll response — document-chunk payloads carry the same
      * id as their point, so this is observably identical for chunk tests.
+     * Phase 7: withVector also returns each point's stored vector.
      * @param {{ must?: unknown[], should?: unknown[], must_not?: unknown[] }} filter
-     * @param {{ limit?: number }} [opts]
+     * @param {{ limit?: number, withVector?: boolean }} [opts]
      */
-    async scrollWithFilter(filter, { limit = 50 } = {}) {
+    async scrollWithFilter(filter, { limit = 50, withVector = false } = {}) {
       calls.push(`scroll:${limit}`);
-      /** @type {{ id: string, score: number, payload: Record<string, unknown> }[]} */
+      /** @type {{ id: string, score: number, payload: Record<string, unknown>, vector?: number[] }[]} */
       const out = [];
       for (const [pointId, p] of [...points]) {
         if (!evalFilter(filter, p.payload)) continue;
-        out.push({ id: pointId, score: 1, payload: p.payload });
-        if (out.length >= limit) break;
+        const hit = { id: pointId, score: 1, payload: p.payload };
+        if (withVector) hit.vector = [...p.vector];
+        out.push(hit);
       }
-      return out;
+      // Qdrant scroll order is unspecified; tests that cap subsets need a
+      // deterministic order. Real IDs are UUIDs in this phase's flows.
+      out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      return out.slice(0, limit);
     },
     async deleteByDocument(documentId) {
       calls.push(`deleteByDocument:${documentId}`);

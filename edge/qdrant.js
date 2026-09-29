@@ -176,11 +176,13 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
      * Filtered scroll: fetch points matching a payload filter WITHOUT any
      * vector or scoring (keyword/metadata-only leg of hybrid retrieval;
      * also used by the Phase 4 memory store, which stores NO vectors).
+     * Phase 7: pass withVector to also receive each point's stored vector
+     * (edge provisioning transfers exact embeddings, never re-embeds).
      * @param {QdrantFilter} filter
      * @param {Object} [opts]
      * @param {number} [opts.limit]
-     * @param {boolean} [opts.withVector] Also return stored vectors (rarely needed).
-     * @returns {Promise<Array<{ id: string, score: number, payload: Record<string, unknown> }>>}
+     * @param {boolean} [opts.withVector] Also return stored vectors (edge provisioning, Phase 7).
+     * @returns {Promise<Array<{ id: string, score: number, payload: Record<string, unknown>, vector?: number[] }>>}
      */
     async scrollWithFilter(filter, { limit = 50, withVector = false } = {}) {
       const data = await request('POST', `/collections/${collection}/points/scroll`, {
@@ -198,7 +200,20 @@ export function createQdrantClient({ baseUrl, collection, fetchImpl = globalThis
         if (typeof p.id !== 'string' || typeof p.payload !== 'object' || p.payload === null) {
           throw new QdrantError(`Qdrant scroll on "${collection}" returned a malformed point`);
         }
-        return { id: p.id, score: 1, payload: /** @type {Record<string, unknown>} */ (p.payload) };
+        const hit = /** @type {{ id: string, score: number, payload: Record<string, unknown>, vector?: number[] }} */ ({
+          id: p.id,
+          score: 1,
+          payload: /** @type {Record<string, unknown>} */ (p.payload),
+        });
+        if (withVector) {
+          // Cloud/edge vectors are stored under the collection's single
+          // named (""-default) vector slot; Qdrant reports it as an array.
+          const v = /** @type {{ vector?: unknown }} */ (p).vector;
+          if (Array.isArray(v) && v.length > 0 && v.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+            hit.vector = v;
+          }
+        }
+        return hit;
       });
     },
 
