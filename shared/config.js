@@ -49,6 +49,9 @@ export const OPTIONAL_DEFAULTS = Object.freeze({
   // edge and the cloud). Detection only — resolution is JEV-recommended and
   // human-confirmed in Phase 10.
   QDRANT_CLOUD_CONFLICT_COLLECTION: 'aeroedge_cloud_conflicts',
+  // Phase 10: the human-review queue for Cloud Pass needs_human_review
+  // verdicts — never auto-propagated; a human decides.
+  QDRANT_CLOUD_REVIEW_COLLECTION: 'aeroedge_cloud_review_queue',
 });
 
 /** Error thrown for any configuration problem (missing file, missing or empty variable). */

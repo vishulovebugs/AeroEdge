@@ -6,7 +6,7 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 9 — Versioning + Conflicts.** Phase 0 delivered the repo skeleton
+> **Status: Phase 10 — JEV Cloud Pass + Fleet Propagation.** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
@@ -38,8 +38,15 @@ JEV decides what's allowed to become knowledge.
 > into EXACTLY four cases — cloud newer (adopt edge-side via legal
 > transitions), edge new (upload; unresolved until Cloud JEV), diverged
 > (WITHHELD + an OPEN `Conflict` record — never overwritten in either
-> direction), identical (dedupe). No last-write-wins anywhere. No Cloud JEV
-> (Phase 10), no resolution logic (Phase 10), no UI (Phase 11).
+> direction), identical (dedupe). No last-write-wins anywhere. Phase 10
+> completes JEV: the Cloud Pass evaluates synced knowledge against what
+> only the fleet can see — other devices' observations, the enterprise
+> master-doc set, prior JEV history — and its gate, in code, lets ONLY
+> `validated` items propagate to the fleet. `needs_human_review` queues for
+> a human; `rejected` stays local history. Conflict resolution is
+> JEV-recommended and human-confirmed: the recommendation attaches to the
+> SAME Phase 9 record, and a separate explicit confirmation is the only
+> path to `resolved`. No UI (Phase 11).
 
 ## Requirements
 
@@ -403,6 +410,54 @@ const open = await reconciler.listOpenConflicts();
   Phase 10; the conflict record's `jev_recommendation` states honestly
   that no recommendation exists yet.
 
+### JEV Cloud Pass + fleet propagation (Phase 10)
+
+The fleet-aware half of JEV. `cloud/jevCloud.js` evaluates a synced
+observation against what ONLY the fleet can see — a different Ollama call,
+a different judge role (JEV-Cloud), and different context than the Edge
+Pass:
+
+- **Corroborating/contradicting observations from OTHER devices** (the
+  cloud memory collection, vector-matched, candidate excluded),
+- the **enterprise master-document set** (Phase 6 cloud docs — more than
+  any one device holds),
+- **prior JEV history** for the asset.
+
+A Cloud Pass without this fleet context cannot even be built — the module
+refuses. Checks, in order: corroboration across devices → master-doc
+consistency (safety contradictions reject) → safety impact if acted on
+and wrong → supersedes / refines / duplicates. Output: `stage: "cloud"`,
+verdict `validated | needs_human_review | rejected`, non-empty rationale
+(empty coerces to needs_human_review — it can never pass as validated).
+
+**The propagation gate, in code** (`cloud/propagation.js`):
+`canPropagate`/`routeVerdict` are the only path to the fleet — only
+`validated` passes. `needs_human_review` queues in
+`QDRANT_CLOUD_REVIEW_COLLECTION` (never auto-propagated, no illegal
+memory transition forced); `rejected` stays local history on the origin
+device and is never propagated.
+
+```js
+const result = await cloudJev.evaluateMemory(memory); // fleet-context pass
+const record = cloudJev.verdictRecord(result, memory.memory_id);
+await cloudJev.persistVerdict(record);           // JEV history grows
+const applied = await gate.applyCloudVerdict(record, memory);
+// applied.action: 'propagate' | 'review' | 'hold_local'
+```
+
+**Conflict resolution (JEV-assisted, human-confirmed):** Cloud JEV
+attaches its `jev_recommendation` to the SAME Phase 9 Conflict record
+(same conflict_id, no fields dropped, status stays open — nothing is
+auto-applied). `confirmConflictResolution` is the separate explicit
+human action and the only path to `resolved`; it refuses conflicts
+without a real recommendation.
+
+Acceptance scenario (live, `test/integration/cloud-jev.test.js`): two
+devices independently upload similar observations; the second upload
+triggers joint evaluation → `validated` citing corroboration; a third
+unrelated low-evidence observation routes to `needs_human_review` instead
+of propagating.
+
 ### Memory orchestrator (Phase 4)
 
 Technician knowledge is a first-class `Memory` record (shared/schemas.js),
@@ -468,8 +523,9 @@ edge/      Edge-side runtime: rag.js (pipeline), retrieval.js (hybrid search),
 cloud/     Cloud-side runtime: knowledge.js (enterprise ingestion → Qdrant
            Cloud, pre-trusted, no JEV pass), provisioning.js (scoped,
            prioritized edge provisioning → Qdrant Edge), sync.js (delta
-           ingest + SyncEvent audit trail); Cloud Pass JEV arrives in a
-           later phase
+           ingest + SyncEvent audit trail), jevCloud.js (fleet-context
+           Cloud Pass judge), propagation.js (the gate: only validated
+           propagates; review queue; conflict recommend + human confirm)
 ui/        Technician-facing UI (vanilla CSS) — later phases
 shared/    Cross-side contracts: config loading, data schemas, the
            lifecycle state machine (shared/lifecycle.js), and the pure

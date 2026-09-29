@@ -38,6 +38,8 @@ const ENTRYPOINTS = [
   'cloud/knowledge.js',
   'cloud/provisioning.js',
   'cloud/sync.js',
+  'cloud/jevCloud.js',
+  'cloud/propagation.js',
   'shared/config.js',
   'shared/schemas.js',
   'shared/lifecycle.js',

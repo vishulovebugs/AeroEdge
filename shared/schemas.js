@@ -118,6 +118,10 @@
  * @property {'open'|'resolved'} status
  * @property {string} resolution
  * @property {string} resolved_by
+ * @property {string} [recommended_by_verdict] Phase 10: verdict_id of the Cloud JEV record backing jev_recommendation (absent = Phase 9 detection-only record).
+ * @property {string} [updated_at] Phase 10: last mutation timestamp (recommendation/confirmation).
+ * @property {string} [resolved_at] Phase 10: when the human confirmation happened (resolved records).
+ * @property {'edge'|'cloud'} [resolution_winner] Phase 10: which side's content won (resolved records).
  */
 
 /** @type {readonly string[]} */
@@ -251,6 +255,12 @@ const CONFLICT_FIELDS = new Set([
   'status',
   'resolution',
   'resolved_by',
+  // Phase 10: provenance for JEV-assisted, human-confirmed resolution.
+  // Optional so Phase 9 detection-only records stay byte-compatible.
+  'recommended_by_verdict',
+  'updated_at',
+  'resolved_at',
+  'resolution_winner',
 ]);
 
 /**
@@ -331,6 +341,18 @@ function requireTimestamp(obj, field, type, errors) {
       )
     );
   }
+}
+
+/**
+ * Optional timestamp: absent is fine, present must parse as a date.
+ * @param {Record<string, unknown>} obj
+ * @param {string} field
+ * @param {string} type
+ * @param {string[]} errors
+ */
+function requireTimestampIfPresent(obj, field, type, errors) {
+  if (obj[field] === undefined) return;
+  requireTimestamp(obj, field, type, errors);
 }
 
 /**
@@ -575,6 +597,14 @@ export function validateConflict(obj) {
     );
   }
   requireEnum(record, 'status', CONFLICT_STATUSES, 'Conflict', errors);
+  // Phase 10 optional provenance — validated only when present.
+  requireNonEmptyStringIfPresent(record, 'recommended_by_verdict', 'Conflict', errors);
+  requireTimestampIfPresent(record, 'updated_at', 'Conflict', errors);
+  requireTimestampIfPresent(record, 'resolved_at', 'Conflict', errors);
+  const winner = record['resolution_winner'];
+  if (winner !== undefined && winner !== 'edge' && winner !== 'cloud') {
+    errors.push(errorFor('Conflict', '"resolution_winner" must be "edge" or "cloud" when present'));
+  }
   // resolution/resolved_by only make sense once the conflict is resolved;
   // an open conflict legitimately carries empty ones.
   const status = record['status'];
