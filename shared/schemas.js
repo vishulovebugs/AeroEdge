@@ -90,6 +90,7 @@
  * @property {string} [doc_type] Document type (e.g. "amm", "bulletin", "procedure").
  * @property {string[]} [applicability] Asset/config applicability list (empty = unrestricted).
  * @property {string[]} [keywords] Curated exact-match tokens (part numbers, error codes, IDs).
+ * @property {JEVStatus} [jev_status] JEV standing (Phase 6: cloud-ingested enterprise docs carry 'not_applicable' — enterprise-sourced, already trusted; ABSENT on edge document chunks, which are pre-JEV retrieval material, not knowledge).
  * @property {string} created_at
  * @property {string} updated_at
  */
@@ -220,6 +221,11 @@ const DOCUMENT_CHUNK_FIELDS = new Set([
   'doc_type',
   'applicability',
   'keywords',
+  // Phase 6: JEV standing on document chunks. Cloud-ingested enterprise
+  // documents carry 'not_applicable' (already trusted — JEV evaluates
+  // knowledge whose trustworthiness is UNCERTAIN, i.e. field-originated).
+  // Optional: edge chunks from Phases 1–5 legitimately omit it.
+  'jev_status',
   'created_at',
   'updated_at',
 ]);
@@ -378,6 +384,19 @@ function requireStringArrayIfPresent(obj, field, type, errors) {
 }
 
 /**
+ * Optional enum: absent is fine, present must be one of the allowed values.
+ * @param {Record<string, unknown>} obj
+ * @param {string} field
+ * @param {readonly string[]} allowed
+ * @param {string} type
+ * @param {string[]} errors
+ */
+function requireEnumIfPresent(obj, field, allowed, type, errors) {
+  if (obj[field] === undefined) return;
+  requireEnum(obj, field, allowed, type, errors);
+}
+
+/**
  * Reject unknown properties so no module can smuggle in its own shape.
  * @param {unknown} obj
  * @param {ReadonlySet<string>} fields
@@ -483,6 +502,8 @@ export function validateDocumentChunk(obj) {
   requireNonEmptyStringIfPresent(record, 'doc_type', 'DocumentChunk', errors);
   requireStringArrayIfPresent(record, 'applicability', 'DocumentChunk', errors);
   requireStringArrayIfPresent(record, 'keywords', 'DocumentChunk', errors);
+  // Phase 6 optional JEV standing — validated only when present.
+  requireEnumIfPresent(record, 'jev_status', JEV_STATUSES, 'DocumentChunk', errors);
   requireTimestamp(record, 'created_at', 'DocumentChunk', errors);
   requireTimestamp(record, 'updated_at', 'DocumentChunk', errors);
   return { valid: errors.length === 0, errors };

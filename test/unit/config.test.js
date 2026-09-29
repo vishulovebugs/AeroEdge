@@ -38,6 +38,7 @@ test('loads all required vars from a complete env, with defaults filled', () => 
   assert.equal(config.QDRANT_CLOUD_URL, 'http://localhost:6334');
   assert.equal(config.OLLAMA_BASE_URL, 'http://127.0.0.1:11434');
   assert.equal(config.QDRANT_EDGE_COLLECTION, 'aeroedge_edge_docs');
+  assert.equal(config.QDRANT_CLOUD_COLLECTION, 'aeroedge_cloud_docs', 'Phase 6: cloud knowledge collection defaulted');
 });
 
 test('optional keys can be overridden via env, file, or optional', () => {

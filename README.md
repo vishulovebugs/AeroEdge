@@ -6,21 +6,25 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 5 — JEV, Edge Pass.** Phase 0 delivered the repo skeleton
+> **Status: Phase 6 — Cloud Knowledge Layer.** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
 > rerank) with source citations. Phase 3 added diagnostic session memory.
 > Phase 4 added the memory orchestrator: technician observations stored as
 > first-class `Memory` records in a dedicated collection with an explicit,
-> stored lifecycle. Phase 5 replaces the stub verdict source with the REAL
+> stored lifecycle. Phase 5 replaced the stub verdict source with the REAL
 > JEV Edge Pass (`edge/jev.js`): a separate Ollama call that evaluates every
 > field observation against its evidence and targeted authoritative
 > retrieval BEFORE the orchestrator routes it — `accept_local` /
 > `needs_more_evidence` / `flag_risk`, each with a REQUIRED non-empty
 > rationale (empty ones are coerced to `needs_more_evidence` in code), and
-> recording is never blocked. No sync engine, no cloud pass, no conflict
-> resolution (Phase 10 by design), no UI (Phase 11).
+> recording is never blocked. Phase 6 starts the cloud side: enterprise
+> documents ingest into a distinct Qdrant Cloud knowledge store, stamped
+> `jev_status: "not_applicable"` — enterprise input arrives pre-trusted, so
+> NO JEV pass applies to it. No edge provisioning, no sync, no propagation
+> (later phases); no cloud pass, no conflict resolution (Phase 10 by
+> design); no UI (Phase 11).
 
 ## Requirements
 
@@ -55,6 +59,7 @@ Copy `.env.example` to `.env` and fill in the values. Required variables:
 | `OLLAMA_BASE_URL` | Optional; defaults to `http://127.0.0.1:11434`. |
 | `QDRANT_EDGE_COLLECTION` | Optional; defaults to `aeroedge_edge_docs`. |
 | `QDRANT_EDGE_MEMORY_COLLECTION` | Optional; defaults to `aeroedge_edge_memories` (technician memories, separate from documents). |
+| `QDRANT_CLOUD_COLLECTION` | Optional; defaults to `aeroedge_cloud_docs` (Phase 6 enterprise knowledge store — architecturally separate from all edge stores). |
 
 ## Running the local pipeline
 
@@ -208,6 +213,47 @@ const result = await orchestrator.captureAndRoute({
 - The Phase 4 stub (`stubVerdictSource`) remains exported, opt-in only for
   tests/debug; the real Edge Pass is the default verdict source.
 
+### Cloud Knowledge Layer (Phase 6)
+
+Enterprise documents ingest into a DISTINCT cloud knowledge store
+(`QDRANT_CLOUD_URL` / `QDRANT_CLOUD_COLLECTION`, default
+`aeroedge_cloud_docs`) — a separate Qdrant instance/collection from
+anything on the edge.
+
+```js
+import { createCloudKnowledge } from './cloud/knowledge.js';
+const cloud = createCloudKnowledge({ config });
+
+const result = await cloud.ingestDocument({
+  documentId: 'ent-std-12',
+  text: 'Enterprise hydraulic standard: system B operates at 2800-3200 PSI…',
+  assetId: 'FLEET-STANDARD',
+  component: 'hydraulics',
+  source: 'Enterprise engineering standard rev 12',
+  docType: 'standard',
+});
+// result.jevStatus === 'not_applicable' — stamped in code, no JEV pass.
+
+const out = await cloud.search('what torque applies to the inlet B-nut?');
+```
+
+- **Trust asymmetry, enforced in code**: enterprise-sourced documents
+  arrive through a controlled channel and are pre-trusted — every chunk is
+  stamped `jev_status: "not_applicable"`. JEV exists to evaluate knowledge
+  whose trustworthiness is UNCERTAIN (field-originated), not controlled
+  enterprise input. No caller input can change the stamp; no JEV call runs
+  on this path.
+- **Structurally parallel to edge ingestion** (chunk → embed → validate →
+  upsert), reusing the endpoint-agnostic transports (chunker, Ollama
+  client, Qdrant client). The cloud module imports NO edge pipeline code,
+  and no edge module imports the cloud layer (both audited by tests).
+- **Separation is proven, not assumed**: the interconnect suite runs the
+  full Phase 1–5 edge stack with the cloud pipeline active and asserts zero
+  cross-writes, edge answers that never cite cloud content, and an Edge
+  Pass that never sees enterprise documents as authoritative evidence.
+- Scope: ingestion and query ONLY. No edge provisioning, no sync, no
+  propagation.
+
 ### Memory orchestrator (Phase 4)
 
 Technician knowledge is a first-class `Memory` record (shared/schemas.js),
@@ -268,7 +314,9 @@ edge/      Edge-side runtime: rag.js (pipeline), retrieval.js (hybrid search),
            session.js (diagnostic session memory), memoryStore.js +
            orchestrator.js (memory lifecycle), jev.js (Edge Pass judge),
            chunker.js, ollama.js + qdrant.js clients
-cloud/     Cloud-side runtime (fleet sync, Cloud Pass JEV) — later phases
+cloud/     Cloud-side runtime: knowledge.js (enterprise ingestion → Qdrant
+           Cloud, pre-trusted, no JEV pass); fleet sync + Cloud Pass JEV
+           arrive in later phases
 ui/        Technician-facing UI (vanilla CSS) — later phases
 shared/    Cross-side contracts: config loading, data schemas, and the
            lifecycle state machine (shared/lifecycle.js)

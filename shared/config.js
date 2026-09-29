@@ -34,6 +34,11 @@ export const OPTIONAL_DEFAULTS = Object.freeze({
   // architecturally separate from authoritative document chunks so field
   // knowledge can never silently blend into reference truth.
   QDRANT_EDGE_MEMORY_COLLECTION: 'aeroedge_edge_memories',
+  // Phase 6: the Cloud knowledge store is a SEPARATE Qdrant instance
+  // (QDRANT_CLOUD_URL) AND a separate collection from anything on the edge.
+  // Enterprise documents arrive pre-trusted: ingestion stamps
+  // jev_status 'not_applicable' — no JEV pass on controlled enterprise input.
+  QDRANT_CLOUD_COLLECTION: 'aeroedge_cloud_docs',
 });
 
 /** Error thrown for any configuration problem (missing file, missing or empty variable). */
