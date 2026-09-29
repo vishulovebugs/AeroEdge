@@ -45,6 +45,10 @@ export const OPTIONAL_DEFAULTS = Object.freeze({
   // Phase 10 Cloud Pass) and from the edge instance entirely.
   QDRANT_CLOUD_MEMORY_COLLECTION: 'aeroedge_cloud_memories',
   QDRANT_CLOUD_SYNC_COLLECTION: 'aeroedge_cloud_sync_events',
+  // Phase 9: open Conflict records (detected version divergence between an
+  // edge and the cloud). Detection only — resolution is JEV-recommended and
+  // human-confirmed in Phase 10.
+  QDRANT_CLOUD_CONFLICT_COLLECTION: 'aeroedge_cloud_conflicts',
 });
 
 /** Error thrown for any configuration problem (missing file, missing or empty variable). */

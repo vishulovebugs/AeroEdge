@@ -30,6 +30,7 @@ const ENTRYPOINTS = [
   'edge/memoryStore.js',
   'edge/orchestrator.js',
   'edge/syncEngine.js',
+  'edge/reconciliation.js',
   'edge/jev.js',
   'edge/chunker.js',
   'edge/ollama.js',
@@ -40,6 +41,7 @@ const ENTRYPOINTS = [
   'shared/config.js',
   'shared/schemas.js',
   'shared/lifecycle.js',
+  'shared/versioning.js',
 ];
 
 const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s+(?:[\s\S]*?from\s*)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;

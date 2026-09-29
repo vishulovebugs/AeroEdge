@@ -6,7 +6,7 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 8 — Sync Engine.** Phase 0 delivered the repo skeleton
+> **Status: Phase 9 — Versioning + Conflicts.** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
@@ -33,8 +33,13 @@ JEV decides what's allowed to become knowledge.
 > filtered by the Phase 4/5 verdict table (accept_local routed for sync or
 > used; flag_risk tagged high-visibility; needs_more_evidence never
 > eligible), and the cloud-side ingest persists the memories plus one
-> `SyncEvent` per item. No conflict detection/version comparison
-> (Phase 9), no Cloud Pass (Phase 10), no UI (Phase 11).
+> `SyncEvent` per item. Phase 9 reconciles the two sides: every delta item
+> is classified against the live cloud copy and the last-synced fingerprint
+> into EXACTLY four cases — cloud newer (adopt edge-side via legal
+> transitions), edge new (upload; unresolved until Cloud JEV), diverged
+> (WITHHELD + an OPEN `Conflict` record — never overwritten in either
+> direction), identical (dedupe). No last-write-wins anywhere. No Cloud JEV
+> (Phase 10), no resolution logic (Phase 10), no UI (Phase 11).
 
 ## Requirements
 
@@ -361,6 +366,43 @@ const result = await syncEngine.syncNow((pkg) => cloud.ingestDelta(pkg));
   detection/version comparison (Phase 9), no Cloud Pass (Phase 10), no
   propagation of flagged knowledge.
 
+### Versioning + conflicts (Phase 9)
+
+A version conflict is DETECTED, never silently overwritten. The
+three-way comparator (`shared/versioning.js`) classifies each delta item
+against the live cloud copy and the last-synced fingerprint (the common
+ancestor from Phase 8's ledger) into exactly four cases:
+
+| Case | Meaning | Handling |
+|---|---|---|
+| `CLOUD_NEWER` | cloud changed since the ancestor, edge didn't | edge ADOPTS the cloud copy via legal lifecycle transitions; ledger acked; never uploaded back |
+| `EDGE_NEW` | edge changed (or is new), cloud didn't | uploads as Phase 8 would — NOT promoted: Cloud JEV (Phase 10) decides promotion |
+| `DIVERGED` | both changed since the ancestor | WITHHELD from upload + an OPEN `Conflict` record (`aeroedge_cloud_conflicts`, Phase 0 contract: `edge_version`, `cloud_version`, `jev_recommendation` placeholder, status `open`) — neither side overwritten, no ack (keeps re-classifying until resolved) |
+| `IDENTICAL` | same fingerprint both sides | deduplicated, acked |
+
+```js
+import { createReconciler } from './edge/reconciliation.js';
+const reconciler = createReconciler({ memoryStore, ledger, cloudMemories, cloudConflicts });
+
+// Compose with Phase 8: classify before ingest, route by case.
+const pkg = await syncEngine.buildDelta();
+const outcome = await reconciler.reconcileDelta(pkg, (upload) => cloud.ingestDelta(upload));
+// { uploaded, adopted, conflicts, deduped, conflictIds }
+const open = await reconciler.listOpenConflicts();
+```
+
+- **No last-write-wins anywhere**: "both changed" is only detectable
+  against the common ancestor — without the Phase 8 ledger, every
+  difference would look like a conflict and last-write-wins would be the
+  only policy left.
+- **Ancestor-less divergence classifies honestly**: both sides differing
+  with no recorded ancestor is `DIVERGED` (detection-first), not a guess.
+- The offline-edit-to-a-synced-memory scenario re-syncs as an `update`
+  and flows straight into divergence detection.
+- Scope: detection only. Resolution (JEV-recommended, human-confirmed) is
+  Phase 10; the conflict record's `jev_recommendation` states honestly
+  that no recommendation exists yet.
+
 ### Memory orchestrator (Phase 4)
 
 Technician knowledge is a first-class `Memory` record (shared/schemas.js),
@@ -420,16 +462,18 @@ required variable. Optional variables must be passed explicitly, e.g.
 edge/      Edge-side runtime: rag.js (pipeline), retrieval.js (hybrid search),
            session.js (diagnostic session memory), memoryStore.js +
            orchestrator.js (memory lifecycle), jev.js (Edge Pass judge),
-           syncEngine.js (delta sync → cloud), chunker.js, ollama.js +
-           qdrant.js clients
+           syncEngine.js (delta sync → cloud), reconciliation.js (version
+           cases, conflict detection), chunker.js, ollama.js + qdrant.js
+           clients
 cloud/     Cloud-side runtime: knowledge.js (enterprise ingestion → Qdrant
            Cloud, pre-trusted, no JEV pass), provisioning.js (scoped,
            prioritized edge provisioning → Qdrant Edge), sync.js (delta
            ingest + SyncEvent audit trail); Cloud Pass JEV arrives in a
            later phase
 ui/        Technician-facing UI (vanilla CSS) — later phases
-shared/    Cross-side contracts: config loading, data schemas, and the
-           lifecycle state machine (shared/lifecycle.js)
+shared/    Cross-side contracts: config loading, data schemas, the
+           lifecycle state machine (shared/lifecycle.js), and the pure
+           three-way version classifier (shared/versioning.js)
 test/      node:test suites (unit, integration, interconnect) + shared fakes
            in test/helpers
 ```

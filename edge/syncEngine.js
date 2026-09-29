@@ -162,9 +162,12 @@ export function createInMemoryLedger() {
  *     human sees it; the delta tags it high-visibility (never
  *     auto-propagatable downstream).
  *   - accept_local: YES only when the Orchestrator actually routed it —
- *     `sync_pending` (importance ≥ threshold) or `used` (proven locally
- *     useful). Plain `local` accept_local is below-threshold KEEP_LOCAL:
- *     not eligible from this engine alone.
+ *     `sync_pending` (importance ≥ threshold), `used` (proven locally
+ *     useful), or `synced` (already fleet-shared; a CONTENT change to a
+ *     synced memory is an offline edit that must re-sync as an update —
+ *     surfaced by Phase 9's divergence detection). Plain `local`
+ *     accept_local is below-threshold KEEP_LOCAL: not eligible from this
+ *     engine alone.
  *   - pending (not yet evaluated): NEVER — no verdict, no sync.
  * @param {Memory} memory
  * @returns {boolean}
@@ -178,7 +181,7 @@ export function isSyncEligible(memory) {
   if (memory.jev_status === 'needs_more_evidence') return false; // NEVER, per the table
   if (memory.jev_status === 'flag_risk') return true; // sync-eligible, tagged high-visibility
   if (memory.jev_status === 'accept_local') {
-    return lifecycle === 'sync_pending' || lifecycle === 'used';
+    return lifecycle === 'sync_pending' || lifecycle === 'used' || lifecycle === 'synced';
   }
   return false; // pending or anything unexpected: no verdict-driven eligibility
 }
