@@ -11,6 +11,8 @@
     "test:unit": "node --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --test \"test/integration/**/*.test.js\"",
     "test:interconnect": "node --test \"test/interconnect/**/*.test.js\"",
-    "test": "node --test \"test/**/*.test.js\""
+    "test:e2e": "node --test \"test/e2e/**/*.test.js\"",
+    "test": "node --test \"test/**/*.test.js\"",
+    "demo": "node bin/aeroedge-demo.js"
   }
 }

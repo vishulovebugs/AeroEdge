@@ -6,7 +6,7 @@ operations in disconnected environments (aviation, maritime, mining, heavy indus
 RAG answers questions. AeroEdge manages knowledge at the edge.
 JEV decides what's allowed to become knowledge.
 
-> **Status: Phase 10 — JEV Cloud Pass + Fleet Propagation.** Phase 0 delivered the repo skeleton
+> **Status: Phase 11 — Final UI + Demo Integration (project complete).** Phase 0 delivered the repo skeleton
 > and shared data contracts. Phase 1 added the offline loop: ingest → chunk →
 > embed (Ollama) → store (Qdrant Edge) → query → grounded answer. Phase 2 made
 > retrieval hybrid (semantic + exact keyword + metadata → fusion → dedup →
@@ -46,7 +46,21 @@ JEV decides what's allowed to become knowledge.
 > a human; `rejected` stays local history. Conflict resolution is
 > JEV-recommended and human-confirmed: the recommendation attaches to the
 > SAME Phase 9 record, and a separate explicit confirmation is the only
-> path to `resolved`. No UI (Phase 11).
+> path to `resolved`. Phase 11 completes the product surface: a
+> zero-dependency `node:http` API layer (`server/app.js`, all subsystems
+> injected so tests drive the SAME endpoints a browser does) and a
+> vanilla HTML/CSS/JS technician console (`ui/`): grounded query with
+> evidence and sources, session context, field-observation capture with
+> the Edge JEV verdict shown immediately, a memory dashboard with sync
+> status, the conflict UI with explicit **Apply Cloud Version / Keep Edge
+> Version / Review Details** buttons (nothing auto-applies), the
+> human-review queue, and a connected/offline indicator.
+> `test/e2e/demo-scenario.test.js` runs the full Section-14 demo
+> headlessly — connect → provision → disconnect → offline query → session
+> follow-up → capture + Edge JEV → routing → reconnect → delta sync →
+> Cloud JEV verdict → conflict with JEV recommendation → explicit human
+> confirmation → fleet propagation of validated items only — asserting
+> the correct stored status transition at every step.
 
 ## Requirements
 
@@ -66,6 +80,7 @@ Individual suites:
 npm run test:unit
 npm run test:integration
 npm run test:interconnect
+npm run test:e2e      # the full demo scenario, headless (no browser)
 ```
 
 ## Configuration
@@ -511,6 +526,42 @@ const applied = await orchestrator.applyRoute(decision); // transitions stored
 required variable. Optional variables must be passed explicitly, e.g.
 `loadConfig({ optional: { FOO: 'bar' } })`.
 
+### Demo console (Phase 11)
+
+The product surface: one server, one UI, no manual data patching.
+
+```bash
+ollama serve && docker run -p 6333:6333 qdrant/qdrant && docker run -p 6334:6334 qdrant/qdrant
+cp .env.example .env          # fill in the two Qdrant URLs + models
+npm run demo                  # UI on http://127.0.0.1:8788 (loopback only)
+```
+
+`npm run demo` (bin/aeroedge-demo.js) wires the REAL clients, seeds the
+enterprise store once (idempotent), provisions this device, and starts
+the device OFFLINE — toggle **connected** in the header when the demo
+reaches the reconnect step. Everything else runs from the console:
+
+- **Ask** — grounded answer with evidence chunks, source citations, and
+  the session context line (Phases 1–3).
+- **Record observation** — stored immediately, Edge JEV verdict +
+  rationale + route shown in the same breath (Phases 4–5); recording is
+  never blocked by evaluation.
+- **Memory dashboard** — every memory with its STORED lifecycle/jev
+  badges; pending-changes view uses the real Phase 8 eligibility
+  predicate; **sync delta to cloud** runs classify → reconcile → ingest
+  and reports the four version cases (Phases 8–9).
+- **Cloud JEV pass** — runnable per synced memory; the fleet-context
+  verdict lands in the review queue or propagates, exactly per the gate
+  (Phase 10).
+- **Conflicts** — Review Details shows both versions plus the JEV
+  recommendation; **Apply Cloud Version** and **Keep Edge Version** are
+  explicit human actions — the only paths to `resolved` (Phases 9–10).
+
+The same endpoints the console calls are driven headlessly by
+`npm run test:e2e` — the demo scenario with fakes, zero services needed.
+Architecture note: the API layer composes Phases 1–10 and reports their
+stored state; it never decides transitions itself.
+
 ## Layout
 
 ```
@@ -526,7 +577,15 @@ cloud/     Cloud-side runtime: knowledge.js (enterprise ingestion → Qdrant
            ingest + SyncEvent audit trail), jevCloud.js (fleet-context
            Cloud Pass judge), propagation.js (the gate: only validated
            propagates; review queue; conflict recommend + human confirm)
-ui/        Technician-facing UI (vanilla CSS) — later phases
+server/    Phase 11 API layer (app.js): a zero-dependency node:http app
+           factory with INJECTED subsystems — the UI's REST surface and
+           the endpoint the e2e demo drives (fakes in tests, real clients
+           in bin/)
+bin/       aeroedge-demo.js: the live demo launcher (real Ollama/Qdrant
+           wiring, boot-time enterprise seed + device provisioning)
+ui/        Technician-facing console: vanilla HTML/CSS/JS (query with
+           evidence, session context, capture + Edge JEV verdict, memory
+           dashboard, conflicts, review queue, connectivity indicator)
 shared/    Cross-side contracts: config loading, data schemas, the
            lifecycle state machine (shared/lifecycle.js), and the pure
            three-way version classifier (shared/versioning.js)

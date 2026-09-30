@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AeroEdge — Edge Knowledge Console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">✈</span>
+      <div>
+        <h1>AeroEdge</h1>
+        <p class="tagline">RAG answers questions. AeroEdge manages knowledge at the edge. JEV decides what&rsquo;s allowed to become knowledge.</p>
+      </div>
+    </div>
+    <div class="connection" id="connection-box" data-connected="unknown">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="connection-label">checking…</span>
+      <button id="btn-toggle-connection" class="btn btn-ghost btn-small" type="button">toggle</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="column column-main">
+      <!-- Query + grounded answer (Phases 1–3) -->
+      <article class="card" id="query-card">
+        <h2>Ask the provisioned knowledge</h2>
+        <form id="query-form" class="row">
+          <input id="query-input" type="text" autocomplete="off"
+                 placeholder="e.g. what is the normal pressure range of hydraulic system B?" />
+          <button class="btn btn-primary" type="submit">Ask</button>
+        </form>
+        <div id="session-box" class="session-box hidden">
+          <h3>Session context <span id="session-id" class="muted"></span></h3>
+          <p id="session-context-line" class="muted"></p>
+        </div>
+        <div id="answer-box" class="answer-box hidden">
+          <h3>Grounded answer</h3>
+          <p id="answer-text"></p>
+          <h4>Evidence &amp; sources</h4>
+          <ul id="evidence-list" class="evidence-list"></ul>
+        </div>
+      </article>
+
+      <!-- Field observation capture + Edge JEV verdict (Phases 4–5) -->
+      <article class="card" id="capture-card">
+        <h2>Record a field observation</h2>
+        <p class="muted">Stored immediately, evaluated by the Edge JEV pass — recording is never blocked by evaluation.</p>
+        <form id="capture-form" class="stack">
+          <textarea id="capture-content" rows="3"
+                    placeholder="e.g. Tightened the B-nut to 45 N·m and the seep stopped."></textarea>
+          <div class="row">
+            <input id="capture-source" type="text" placeholder="technician id (optional)" />
+            <button class="btn btn-primary" type="submit">Record observation</button>
+          </div>
+        </form>
+        <div id="verdict-box" class="verdict-box hidden">
+          <h3>Edge JEV verdict</h3>
+          <p><span id="verdict-badge" class="badge"></span> <span id="verdict-confidence" class="muted"></span></p>
+          <p id="verdict-rationale"></p>
+          <p id="verdict-route" class="muted"></p>
+        </div>
+      </article>
+    </section>
+
+    <section class="column column-side">
+      <!-- Memory dashboard + sync status (Phases 4, 8) -->
+      <article class="card" id="dashboard-card">
+        <h2>Memory dashboard</h2>
+        <div class="row row-actions">
+          <button id="btn-refresh-memories" class="btn btn-ghost btn-small" type="button">refresh</button>
+          <button id="btn-sync-changes" class="btn btn-ghost btn-small" type="button">pending changes</button>
+          <button id="btn-sync-delta" class="btn btn-primary btn-small" type="button" title="Classify → reconcile → cloud ingest (Phase 8+9)">sync delta to cloud</button>
+        </div>
+        <ul id="memories-list" class="memories-list"></ul>
+        <div id="sync-box" class="sync-box hidden">
+          <h3>Pending changes</h3>
+          <ul id="sync-pending-list" class="memories-list"></ul>
+          <div id="sync-outcome" class="sync-outcome hidden"></div>
+        </div>
+      </article>
+
+      <!-- Conflicts (Phases 9–10): JEV recommendation + explicit human buttons -->
+      <article class="card" id="conflicts-card">
+        <h2>Conflicts</h2>
+        <p class="muted">Divergences are detected, never overwritten. Resolution is JEV-recommended, human-confirmed — nothing applies automatically.</p>
+        <div class="row row-actions">
+          <button id="btn-refresh-conflicts" class="btn btn-ghost btn-small" type="button">refresh</button>
+        </div>
+        <ul id="conflicts-list" class="conflicts-list"></ul>
+      </article>
+
+      <!-- Human review queue (Phase 10) -->
+      <article class="card" id="review-card">
+        <h2>Human review queue</h2>
+        <p class="muted">Cloud JEV <code>needs_human_review</code> items wait here for a person — never auto-propagated.</p>
+        <div class="row row-actions">
+          <button id="btn-refresh-review" class="btn btn-ghost btn-small" type="button">refresh</button>
+        </div>
+        <ul id="review-list" class="review-list"></ul>
+      </article>
+    </section>
+  </main>
+
+  <!-- Review-details dialog: full edge/cloud versions + recommendation -->
+  <dialog id="conflict-dialog" class="conflict-dialog">
+    <h2>Conflict details</h2>
+    <div id="conflict-details"></div>
+    <p class="muted" id="conflict-recommendation"></p>
+    <div class="row row-actions dialog-actions">
+      <button id="btn-compute-rec" class="btn btn-ghost" type="button">Compute JEV recommendation</button>
+      <button id="btn-apply-cloud" class="btn btn-primary" type="button">Apply Cloud Version</button>
+      <button id="btn-keep-edge" class="btn btn-secondary" type="button">Keep Edge Version</button>
+      <button id="btn-close-dialog" class="btn btn-ghost" type="button">Close</button>
+    </div>
+  </dialog>
+
+  <footer class="footer">
+    <span id="model-line" class="muted"></span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

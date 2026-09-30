@@ -40,6 +40,7 @@ const ENTRYPOINTS = [
   'cloud/sync.js',
   'cloud/jevCloud.js',
   'cloud/propagation.js',
+  'server/app.js',
   'shared/config.js',
   'shared/schemas.js',
   'shared/lifecycle.js',
